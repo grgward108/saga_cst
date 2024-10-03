@@ -46,6 +46,25 @@ class ResBlock(nn.Module):
             return self.ll(Xout)
         return Xout
 
+class PositionalEncoding(nn.Module):
+    def __init__(self, d_model, max_len=5000):
+        super(PositionalEncoding, self).__init__()
+        pe = torch.zeros(max_len, d_model)
+        position = torch.arange(0, max_len, dtype=torch.float32).unsqueeze(1)
+        div_term = torch.exp(torch.arange(0, d_model, 2).float() * (-np.log(10000.0) / d_model))
+        pe[:, 0::2] = torch.sin(position * div_term) 
+        pe[:, 1::2] = torch.cos(position * div_term) 
+        pe = pe.unsqueeze(0)  
+        self.register_buffer('pe', pe)
+
+    def forward(self, x):
+        """
+        Args:
+            x: Tensor of shape (batch_size, seq_len, d_model)
+        """
+        x = x + self.pe[:, :x.size(1), :]
+        return x
+
 
 class PointNetEncoder(nn.Module):
 
@@ -75,48 +94,104 @@ class MarkerNet(nn.Module):
         super(MarkerNet, self).__init__()
 
         self.cfg = cfg
-        ## condition features
+        self.latentD = latentD
+        self.in_cond = in_cond
+        self.in_feature = in_feature  # Total number of marker features (number of markers * features per marker)
+        self.n_markers = int(in_feature / 3)  # Assuming each marker has 3 features (x, y, z)
+        self.n_neurons = n_neurons
         self.obj_cond_feature = 1 if cfg.cond_object_height else 0
 
-        self.enc_bn1 = nn.BatchNorm1d(in_feature + self.obj_cond_feature)
-        self.enc_rb1 = ResBlock(in_cond + in_feature + int(in_feature/3) + self.obj_cond_feature, n_neurons)
-        self.enc_rb2 = ResBlock(n_neurons + in_cond + in_feature + int(in_feature/3) + self.obj_cond_feature, n_neurons)
+        # Transformer parameters
+        self.d_model = 128  # Embedding dimension for the transformer
+        self.nhead = 8      # Number of attention heads in the transformer
+        self.num_layers = 4 # Number of transformer encoder layers
+        self.dim_feedforward = 256  # Dimension of the feedforward network in the transformer
 
+        # Positional encoding
+        self.pos_encoder = PositionalEncoding(self.d_model, max_len=self.n_markers)
+
+        # Input embedding layer
+        input_dim = 3 + self.obj_cond_feature  # Input features per marker (3 for x, y, z, plus object height if used)
+        self.input_proj = nn.Linear(input_dim, self.d_model)  # Projects marker inputs to the embedding dimension
+
+        # Transformer encoder
+        encoder_layer = nn.TransformerEncoderLayer(d_model=self.d_model, nhead=self.nhead, dim_feedforward=self.dim_feedforward)
+        self.transformer_encoder = nn.TransformerEncoder(encoder_layer, num_layers=self.num_layers)
+
+        # Fully connected layer after transformer
+        transformer_output_dim = self.d_model * self.n_markers  # Total dimension after flattening transformer output
+        self.fc_out = nn.Linear(transformer_output_dim + self.in_cond, self.n_neurons)
+
+        # Residual blocks
+        self.enc_rb1 = ResBlock(self.n_neurons, self.n_neurons)
+        self.enc_rb2 = ResBlock(self.n_neurons, self.n_neurons)
+
+        # Decoder layers for marker positions and probabilities
         self.dec_rb1 = ResBlock(latentD + in_cond, n_neurons)
         self.dec_rb2_xyz = ResBlock(n_neurons + latentD + in_cond + self.obj_cond_feature, n_neurons)
         self.dec_rb2_p = ResBlock(n_neurons + latentD + in_cond, n_neurons)
 
-        self.dec_output_xyz = nn.Linear(n_neurons, 143*3)
-        self.dec_output_p = nn.Linear(n_neurons, 143)
-        self.p_output = nn.Sigmoid()
+        self.dec_output_xyz = nn.Linear(n_neurons, self.in_feature)  # Outputs predicted marker positions
+        self.dec_output_p = nn.Linear(n_neurons, self.n_markers)     # Outputs predicted probabilities for markers
+        self.p_output = nn.Sigmoid()  # Activation function for probabilities
+
+
+
+
 
     def enc(self, cond_object, markers, contacts_markers, transf_transl):
         _, _, _, _, _, object_cond = cond_object
 
-        X = markers.view(markers.shape[0], -1)
+        bs = markers.size(0)  
+        markers = markers.view(bs, self.n_markers, 3)
+        markers = markers.float()
+        contacts_markers = contacts_markers.float()
+        transf_transl = transf_transl.float()
+
 
         if self.obj_cond_feature == 1:
-            X = torch.cat([X, transf_transl[:, -1, None]], dim=-1).float()
+            object_height = transf_transl[:, -1, None].unsqueeze(1).repeat(1, self.n_markers, 1)
+            markers = torch.cat([markers, object_height], dim=-1)
+        else:
+            markers = markers  # Each marker has 3 features
 
-        X0 = self.enc_bn1(X)
+        # Project marker features to embedding dimension
+        marker_embeds = self.input_proj(markers)  # Shape: (batch_size, n_markers, d_model)
+        marker_embeds = self.pos_encoder(marker_embeds) 
+        marker_embeds = marker_embeds.permute(1, 0, 2)
 
-        X0 = torch.cat([X0, contacts_markers.view(-1, 143), object_cond], dim=-1)
+        transformer_output = self.transformer_encoder(marker_embeds) 
+        transformer_output = transformer_output.permute(1, 0, 2).contiguous().view(bs, -1)  
 
-
-        X = self.enc_rb1(X0, True)
-        X = self.enc_rb2(torch.cat([X0, X], dim=1), True)
+        X0 = torch.cat([transformer_output, object_cond], dim=-1)
+        X = F.relu(self.fc_out(X0))
+        X = self.enc_rb1(X)
+        X = self.enc_rb2(X)
 
         return X
 
-    def dec(self, Z, cond_object, transf_transl):
 
+    def dec(self, Z, cond_object, transf_transl):
+        # Extract object condition feature
         _, _, _, _, _, object_cond = cond_object
+        # Concatenate latent vector Z and object condition features
         X0 = torch.cat([Z, object_cond], dim=1).float()
 
+        # Pass through first residual block
         X = self.dec_rb1(X0, True)
-        X_xyz = self.dec_rb2_xyz(torch.cat([X0, X, transf_transl[:, -1, None]], dim=1).float(), True)
+
+        # Include object height in XYZ decoder (optional)
+        if self.obj_cond_feature == 1:
+            object_height = transf_transl[:, -1, None]
+            X_xyz_input = torch.cat([X0, X, object_height], dim=1).float()
+        else:
+            X_xyz_input = torch.cat([X0, X], dim=1).float()
+
+        # Pass through residual blocks for position and probability predictions
+        X_xyz = self.dec_rb2_xyz(X_xyz_input, True)
         X_p = self.dec_rb2_p(torch.cat([X0, X], dim=1).float(), True)
 
+        # Predict marker positions and probabilities
         xyz_pred = self.dec_output_xyz(X_xyz)
         p_pred = self.p_output(self.dec_output_p(X_p))
 
@@ -257,7 +332,7 @@ class FullBodyGraspNet(nn.Module):
         device = verts_object.device
         self.eval()
         with torch.no_grad():
-            Zgen = np.random.normal(0., 1., size=(bs, self.latentD))
+            Zgen = np.random.normal(0., 1., size=(bs, self.latentD)) #generates random latent vectors Zgen using standard normal distribution
             Zgen = torch.tensor(Zgen,dtype=dtype).to(device)
 
         object_cond = self.pointnet(l0_xyz=verts_object, l0_points=feat_object)

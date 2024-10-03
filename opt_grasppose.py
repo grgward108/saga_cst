@@ -15,6 +15,7 @@ from utils.utils import makelogger, makepath
 from WholeGraspPose.models.fittingop import FittingOP
 from WholeGraspPose.models.objectmodel import ObjectModel
 from WholeGraspPose.trainer import Trainer
+import wandb
 
 
 #### inference
@@ -298,7 +299,20 @@ if __name__ == '__main__':
 
     save_dir = os.path.join(work_dir, args.object)
     if not os.path.exists(save_dir):
-        os.makedirs(save_dir)        
+        os.makedirs(save_dir)
+
+    # Initialize WandB
+    wandb.init(entity='edward-effendy-tokyo-tech696', project='GraspPose_Inference', name=args.object)
+
+    # Update wandb config
+    wandb.config.update({
+        "experiment": args.exp_name,
+        "gender": args.gender,
+        "object": args.object,
+        "n_object_samples": args.n_object_samples,
+        "n_rand_samples_per_object": args.n_rand_samples_per_object,
+        "type_object_samples": args.type_object_samples,
+    })        
 
     logger = makelogger(makepath(os.path.join(save_dir, '%s.log' % (args.object)), isfile=True)).info
     
