@@ -20,11 +20,14 @@ from utils.utils import makelogger, makepath, to_cpu
 
 from WholeGraspPose.data.dataloader import LoadData
 from WholeGraspPose.models.models import FullBodyGraspNet
+import wandb
 
 
 class Trainer:
 
     def __init__(self,cfg, inference=False, logger=None):
+
+        wandb.init(entity='edward-effendy-tokyo-tech696', project='GraspPose_Training', name='trial 1')
 
 
         """continue to train from latest checkpoint"""
@@ -315,7 +318,7 @@ class Trainer:
         if n_epochs is None:
             n_epochs = self.cfg.n_epochs
 
-        self.logger('Started Training at %s for %d epochs' % (datetime.strftime(starttime, '%Y-%m-%d_%H:%M:%S'), n_epochs))
+        self.logger('Started Trainin g at %s for %d epochs' % (datetime.strftime(starttime, '%Y-%m-%d_%H:%M:%S'), n_epochs))
         if message is not None:
             self.logger(message)
 
@@ -433,6 +436,12 @@ class Trainer:
 
                     self.logger('object train_auc: %f, object eval_auc: %f' % (train_roc_auc_object, eval_roc_auc_object))
                     self.logger('markers train_auc: %f, markers eval_auc: %f' % (train_roc_auc_markers, eval_roc_auc_markers))
+                    wandb.log({
+                        "train_auc_object": train_roc_auc_object,
+                        "eval_auc_object": eval_roc_auc_object,
+                        "train_auc_markers": train_roc_auc_markers,
+                        "eval_auc_markers": eval_roc_auc_markers
+                    })
 
                 # if early_stopping_net(eval_loss_dict_net['loss_total']):
                 #     self.fit_net = False

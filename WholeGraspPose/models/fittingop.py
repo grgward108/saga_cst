@@ -18,6 +18,7 @@ from human_body_prior.tools.model_loader import load_vposer
 from torch.autograd import Variable
 from utils.train_helper import EarlyStopping, point2point_signed
 from utils.utils import RotConverter
+import wandb
 
 
 class FittingOP:
@@ -235,11 +236,33 @@ class FittingOP:
         loss_dict['foot'] = loss_foot.detach().cpu().numpy()
         loss_dict['reg'] = (loss_vpose_reg+loss_hand_pose_reg+loss_eye_pose_reg).detach().cpu().numpy()
 
+        # Compute total interpenetration depth in cm
+        interpenetration_depth = torch.sum(torch.abs(h2o_signed[h2o_signed < 0]))
+        interpenetration_depth_cm = interpenetration_depth * 100  # Convert meters to centimeters
+        loss_dict['interpenetration_depth_cm'] = interpenetration_depth_cm.detach().cpu().item()
+
+        # Compute average interpenetration depth in cm
+        num_interpenetrating_vertices = torch.sum(h2o_signed < 0).item()
+
+        average_interpenetration_depth_cm = interpenetration_depth_cm / num_interpenetrating_vertices if num_interpenetrating_vertices > 0 else 0.0
+        loss_dict['average_interpenetration_depth_cm'] = average_interpenetration_depth_cm
+
+        # Ensure average_interpenetration_depth_cm is a float
+        if isinstance(average_interpenetration_depth_cm, torch.Tensor):
+            average_interpenetration_depth_cm = average_interpenetration_depth_cm.detach().cpu().item()
+        loss_dict['average_interpenetration_depth_cm'] = average_interpenetration_depth_cm
+
+
         vertices_info = {}
         vertices_info['hand colli'] = torch.where(v_dist_neg==True)[0].size()[0]
         vertices_info['obj colli'] = torch.where(w_dist_neg==True)[0].size()[0]
         vertices_info['contact'] = torch.where((h2o_signed < 0.001) * (h2o_signed > -0.001)==True)[0].size()[0]
         vertices_info['hand markers colli'] = torch.where(v_dist_marker_neg==True)[0].size()[0]
+        # Add contact ratio
+        total_hand_vertices = h2o_signed.size(1)
+        contact_ratio = vertices_info['contact'] / total_hand_vertices
+        vertices_info['contact_ratio'] = float(contact_ratio)
+
 
         return loss, loss_dict, body_markers_rec, body_param, vertices_info, rhand_verts_rec, rh_normals, h2o_signed, o2h_signed
 
@@ -332,11 +355,27 @@ class FittingOP:
         loss_dict['foot'] = (stage<2)*loss_foot.detach().cpu().numpy()
         loss_dict['reg'] = (loss_vpose_reg+loss_hand_pose_reg+loss_eye_pose_reg).detach().cpu().numpy()
 
+        interpenetration_depth = torch.sum(torch.abs(h2o_signed[h2o_signed < 0]))
+        interpenetration_depth_cm = interpenetration_depth * 100  # Convert meters to centimeters
+        loss_dict['interpenetration_depth_cm'] = interpenetration_depth_cm.item()
+
+        # Compute average interpenetration depth in cm
+        num_interpenetrating_vertices = torch.sum(h2o_signed < 0).item()
+        if num_interpenetrating_vertices > 0:
+            average_interpenetration_depth_cm = interpenetration_depth_cm / num_interpenetrating_vertices
+        else:
+            average_interpenetration_depth_cm = 0.0
+        loss_dict['average_interpenetration_depth_cm'] = average_interpenetration_depth_cm
+
         vertices_info = {}
         vertices_info['hand colli'] = torch.where(v_dist_neg==True)[0].size()[0]
         vertices_info['obj colli'] = torch.where(w_dist_neg==True)[0].size()[0]
         vertices_info['contact'] = torch.where((h2o_signed < 0.001) * (h2o_signed > -0.001)==True)[0].size()[0]
 
+        # Compute contact ratio
+        total_hand_vertices = h2o_signed.size(1)  # Total number of hand vertices
+        contact_ratio = vertices_info['contact'] / total_hand_vertices
+        vertices_info['contact_ratio'] = contact_ratio
         return loss, loss_dict, body_markers_rec, body_param, vertices_info
 
 
@@ -372,6 +411,9 @@ class FittingOP:
         save_loss['marker contact'] = []
         save_loss['object contact'] = []
         save_loss['prior contact'] = []
+        save_loss['interpenetration_depth_cm'] = []
+        save_loss['average_interpenetration_depth_cm'] = []
+        save_loss['contact_ratio'] = []
 
         start = time.time()
 
@@ -387,6 +429,9 @@ class FittingOP:
                 if self.verbose and not (ii+1) % 50:
                     self.logger('[INFO][fitting][stage{:d}] iter={:d}, loss:{:s}, verts_info:{:s}'.format(ss,
                                             ii, losses_str, verts_str))
+                    wandb.log(loss_dict)
+                    wandb.log(vertices_info) 
+                                        
 
                     # #### (optional) debug here
                     # # import open3d as o3d 

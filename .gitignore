@@ -5,3 +5,6 @@ mano_v1_2/
 vposer_v1_0/
 pretrained_model/
 logs/
+chamfer_distance/
+wandb/
+__pycache__/
