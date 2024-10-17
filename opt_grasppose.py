@@ -16,6 +16,7 @@ from WholeGraspPose.models.fittingop import FittingOP
 from WholeGraspPose.models.objectmodel import ObjectModel
 from WholeGraspPose.trainer import Trainer
 import wandb
+from utils.evaluate_interpenetration_depth import extract_and_save_interpenetration_depth 
 
 
 #### inference
@@ -320,4 +321,10 @@ if __name__ == '__main__':
     
     samples_results = inference(grabpose, args.object, args.n_object_samples, args.n_rand_samples_per_object, args.type_object_samples, save_dir)
     fitting_results = pose_opt(grabpose, samples_results, args.n_rand_samples_per_object, args.object, cfg.gender, save_dir, logger, grabpose.device)
+
+    log_file_path = os.path.join(save_dir, f"{args.object}.log")
+    csv_file_path = os.path.join(save_dir, "interpenetration_depth.csv")
+    
+    # Call the function to extract from the log and save to CSV
+    extract_and_save_interpenetration_depth(log_file_path, csv_file_path)
 
