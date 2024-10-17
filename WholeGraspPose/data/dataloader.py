@@ -41,6 +41,33 @@ class LoadData(data.Dataset):
                     self.markers_idx += list(marker['indices'].values())
         print(len(self.markers_idx))
         self.ds = self.load_full_data(self.ds_path)
+        self.body_part_groups = {
+                            'head_and_neck': [2819, 3076, 1795, 2311, 1043, 919, 8985, 1696, 1703, 9002, 8757, 2383, 2898, 3035, 2148, 9066, 8947, 2041, 2813],
+                            'trunk': [4391, 4297, 5615, 5944, 5532, 5533],
+                            'right_upper_limb': [7179, 7028, 7115, 7251, 7274, 7293],
+                            'left_upper_limb': [4509, 4245, 4379, 4515, 4538, 4557],
+                            'right_hand': [8001, 7781, 7750, 7978, 7756, 7884, 7500, 7419, 7984, 7633, 7602, 7667, 7860, 8082, 7351, 7611, 7867, 7423, 7357, 7396, 7443, 7446, 7536, 7589, 7618, 7625, 7692, 7706, 7730, 7748, 7789, 7847, 7858, 7924, 7931, 7976, 8039, 8050, 8087, 8122],
+                            'left_hand': [4897, 5250, 4931, 5124, 5346, 4615, 5321, 4875, 5131, 4683, 4686, 4748, 5268, 5045, 5014, 5242, 5020, 5149, 4628, 4641, 4660, 4690, 4691, 4710, 4750, 4885, 4957, 4970, 5001, 5012, 5082, 5111, 5179, 5193, 5229, 5296, 5306, 5315, 5353, 5387],
+                            'left_legs': [5857, 5893,  5899, 3479, 3781, 3638, 3705, 5761, 8852],
+                            'right_legs' : [8551, 8587, 8593, 6352, 6539, 6401, 6466, 8455, 8634],
+                        }
+        
+
+    def map_marker_to_part(self, marker_indices):
+        """
+        Function to map markers to specific body parts based on markers_idx.
+        """
+        part_labels = np.zeros(len(marker_indices))  # Initialize part labels for each marker as 0 (unassigned)
+
+        # Loop through each body part and assign a label
+        for part_index, (part_name, part_indices) in enumerate(self.body_part_groups.items()):
+            for marker_idx in part_indices:
+                if marker_idx in marker_indices:
+                    mapped_index = marker_indices.index(marker_idx)
+                    part_labels[mapped_index] = part_index + 1 
+
+        return part_labels
+        
 
     def load_full_data(self, path):
         rec_list = []
@@ -55,6 +82,7 @@ class LoadData(data.Dataset):
         global_orient_object_list = []
         rotmat_list = []
         contacts_markers_list = []
+        part_labels_list = []
         body_list = {}
         for key in ['transl', 'global_orient', 'body_pose', 'jaw_pose', 'leye_pose', 'reye_pose', 'left_hand_pose', 'right_hand_pose', 'expression']:
             body_list[key] = []
@@ -84,6 +112,11 @@ class LoadData(data.Dataset):
             transf_transl_list.append(data['transf_transl'])
             normal_object_list.append(data['normal_object'])
             global_orient_object_list.append(data['global_orient_object'])
+
+            # Get SMPL-X markers
+            marker_indices = self.markers_idx
+            part_labels = self.map_marker_to_part(marker_indices)  # Map each marker to a body part
+            part_labels_list.append(part_labels)
 
             orient = torch.tensor(data['global_orient_object'])
             rot_mats = batch_rodrigues(orient.view(-1, 3)).view([orient.shape[0], 9]).numpy()
@@ -115,6 +148,8 @@ class LoadData(data.Dataset):
         output['normal_object'] = torch.tensor(np.concatenate(normal_object_list, axis=0))    # (B, 2048, 3)
         output['global_orient_object'] = torch.tensor(np.concatenate(global_orient_object_list, axis=0))    # (B, 2048, 3)
         output['rotmat'] = torch.tensor(np.concatenate(rotmat_list, axis=0))    # (B, 2048, 3)
+        output['part_labels'] = torch.tensor(np.concatenate(part_labels_list, axis=0))  # Part-based labels (B, 143)
+       
 
         # SMPLX parameters
         output['smplxparams'] = {}
@@ -133,6 +168,7 @@ class LoadData(data.Dataset):
 
         data_out['markers'] = self.ds['markers'][idx]
         data_out['contacts_markers'] = self.ds['contacts_markers'][idx]
+        data_out['part_labels'] = self.ds['part_labels'][idx].long()
         data_out['verts_object'] = self.ds['verts_object'][idx]
         data_out['normal_object'] = self.ds['normal_object'][idx]
         data_out['global_orient_object'] = self.ds['global_orient_object'][idx]

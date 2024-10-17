@@ -110,7 +110,10 @@ class Traj_MLP_CVAE(nn.Module):  # T*4 => T*8 => ResBlock -> z => ResBlock
         return self.decode(z, y)
 
     def _load_model(self):
-        print('Loading Traj_CVAE from {} ...'.format(self.load_path))
-        assert self.load_path is not None
-        model_cp = torch.load(self.load_path)
-        self.load_state_dict(model_cp['model_dict'])
+        if self.load_path:  # Check if the load_path is provided (not empty)
+            print('Loading Traj_CVAE from {} ...'.format(self.load_path))
+            model_cp = torch.load(self.load_path)
+            self.load_state_dict(model_cp['model_dict'])
+        else:
+            print("No pretrained model provided. Training from scratch.")
+
