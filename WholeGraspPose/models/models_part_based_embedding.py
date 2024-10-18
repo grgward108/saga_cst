@@ -223,9 +223,6 @@ class MarkerNet(nn.Module):
 
         return X
 
-
-
-
     def dec(self, Z, cond_object, transf_transl):
         # Extract object condition feature
         _, _, _, _, _, object_cond = cond_object

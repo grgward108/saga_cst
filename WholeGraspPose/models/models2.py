@@ -1,4 +1,5 @@
 import sys
+import math  # Added for sqrt
 
 sys.path.append('.')
 sys.path.append('..')
@@ -115,7 +116,11 @@ class MarkerNet(nn.Module):
         self.input_proj = nn.Linear(input_dim, self.d_model)  # Projects marker inputs to the embedding dimension
 
         self.object_cond_proj = nn.Linear(self.in_cond, self.d_model)
-        self.cross_attn = nn.MultiheadAttention(embed_dim=self.d_model, num_heads=self.nhead)
+        # Cross-Attention parameters
+        self.q_proj = nn.Linear(self.d_model, self.d_model)
+        self.k_proj = nn.Linear(self.d_model, self.d_model)
+        self.v_proj = nn.Linear(self.d_model, self.d_model)
+        self.hand_attention_bias = nn.Parameter(torch.tensor(1.0))  # Learnable hand bias
 
         # Transformer encoder
         encoder_layer = nn.TransformerEncoderLayer(d_model=self.d_model, nhead=self.nhead, dim_feedforward=self.dim_feedforward)
@@ -138,16 +143,15 @@ class MarkerNet(nn.Module):
         self.dec_output_p = nn.Linear(n_neurons, self.n_markers)     # Outputs predicted probabilities for markers
         self.p_output = nn.Sigmoid()  # Activation function for probabilities
 
-
-
-    def enc(self, cond_object, markers, contacts_markers, transf_transl):
+    def enc(self, cond_object, markers, contacts_markers, transf_transl, part_labels):
         _, _, _, _, _, object_cond = cond_object
 
         bs = markers.size(0)
         markers = markers.view(bs, self.n_markers, 3).float()
+        part_labels = part_labels.view(bs, self.n_markers)
+
         contacts_markers = contacts_markers.float()
         transf_transl = transf_transl.float()
-
 
         if self.obj_cond_feature == 1:
             object_height = transf_transl[:, -1, None].unsqueeze(1).repeat(1, self.n_markers, 1)
@@ -155,28 +159,49 @@ class MarkerNet(nn.Module):
 
         # Project marker features to embedding dimension
         marker_embeds = self.input_proj(markers)  # Shape: (bs, n_markers, d_model)
-    
         marker_embeds = self.pos_encoder(marker_embeds)
 
-        marker_embeds = marker_embeds.permute(1, 0, 2)  # Shape: (n_markers, bs, d_model)
-
         # Transformer Encoder
+        marker_embeds = marker_embeds.permute(1, 0, 2)  # Shape: (n_markers, bs, d_model)
         transformer_output = self.transformer_encoder(marker_embeds)
+        transformer_output = transformer_output.permute(1, 0, 2)  # Shape: (bs, n_markers, d_model)
 
         # Project object condition to embedding dimension
         object_cond_proj = self.object_cond_proj(object_cond)  # Shape: (bs, d_model)
 
-        object_cond_proj = object_cond_proj.unsqueeze(0)  # Shape: (1, bs, d_model)
+        # Cross-Attention with Hand Bias
+        query = object_cond_proj.unsqueeze(1)  # (bs, 1, d_model)
+        key = transformer_output  # (bs, n_markers, d_model)
+        value = transformer_output  # (bs, n_markers, d_model)
 
-        # Cross-Attention
-        attn_output, attn_weights = self.cross_attn(
-            query=transformer_output,  # (n_markers, bs, d_model)
-            key=object_cond_proj,      # (1, bs, d_model)
-            value=object_cond_proj     # (1, bs, d_model)
-        )
-        attn_output = attn_output.permute(1, 0, 2).contiguous().view(bs, -1)  # Shape: (bs, n_markers * d_model)
+        # Project query, key, value
+        Q = self.q_proj(query)  # (bs, 1, d_model)
+        K = self.k_proj(key)    # (bs, n_markers, d_model)
+        V = self.v_proj(value)  # (bs, n_markers, d_model)
 
-        X0 = attn_output
+        # Compute attention scores
+        attn_scores = torch.matmul(Q, K.transpose(-2, -1)) / math.sqrt(self.d_model)  # (bs, 1, n_markers)
+
+        # Adjust attention scores for hand markers
+        hand_labels = torch.tensor([5, 6], device=part_labels.device)  # Assuming labels 5 and 6 correspond to hands
+        is_hand_marker = (part_labels.unsqueeze(-1) == hand_labels).any(dim=-1)  # (bs, n_markers)
+        hand_mask = is_hand_marker.float().unsqueeze(1)  # (bs, 1, n_markers)
+
+        adjusted_attn_scores = attn_scores + hand_mask * self.hand_attention_bias  # (bs, 1, n_markers)
+
+        # Compute attention weights
+        attn_weights = F.softmax(adjusted_attn_scores, dim=-1)  # (bs, 1, n_markers)
+
+        # Compute attention output
+        attn_output = torch.matmul(attn_weights, V)  # (bs, 1, d_model)
+
+        # Expand attn_output to match the number of markers (optional based on your architecture)
+        attn_output = attn_output.expand(-1, self.n_markers, -1)  # (bs, n_markers, d_model)
+
+        # Flatten attn_output
+        attn_output_flat = attn_output.contiguous().view(bs, -1)  # (bs, n_markers * d_model)
+
+        X0 = attn_output_flat
 
         X = F.relu(self.fc_out(X0))
 
@@ -185,8 +210,6 @@ class MarkerNet(nn.Module):
         X = self.enc_rb2(X)
 
         return X
-
-
 
     def dec(self, Z, cond_object, transf_transl):
         # Extract object condition feature
@@ -304,9 +327,9 @@ class FullBodyGraspNet(nn.Module):
         self.enc_var = nn.Linear(cfg.n_neurons, cfg.latentD)
 
 
-    def encode(self, object_cond, verts_object, feat_object, contacts_object, markers, contacts_markers, transf_transl):
+    def encode(self, object_cond, verts_object, feat_object, contacts_object, markers, contacts_markers, transf_transl, part_labels):
         # marker branch
-        marker_feat = self.marker_net.enc(object_cond, markers, contacts_markers, transf_transl)   # [B, n_neurons=1024]
+        marker_feat = self.marker_net.enc(object_cond, markers, contacts_markers, transf_transl, part_labels)   # [B, n_neurons=1024]
 
         # contact branch
         contact_feat = self.contact_net.enc(contacts_object, verts_object, feat_object)  # [B, hc*8]
@@ -329,9 +352,9 @@ class FullBodyGraspNet(nn.Module):
 
         return markers_xyz_pred.view(bs, -1, 3), markers_p_pred, contact_pred
 
-    def forward(self, verts_object, feat_object, contacts_object, markers, contacts_markers, transf_transl, **kwargs):
+    def forward(self, verts_object, feat_object, contacts_object, markers, contacts_markers, transf_transl, part_labels, **kwargs):
         object_cond = self.pointnet(l0_xyz=verts_object, l0_points=feat_object)
-        z = self.encode(object_cond, verts_object, feat_object, contacts_object, markers, contacts_markers, transf_transl)
+        z = self.encode(object_cond, verts_object, feat_object, contacts_object, markers, contacts_markers, transf_transl, part_labels)
         z_s = z.rsample()
 
         markers_xyz_pred, markers_p_pred, object_p_pred = self.decode(z_s, object_cond, verts_object, feat_object, transf_transl)
