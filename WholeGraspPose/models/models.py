@@ -102,7 +102,7 @@ class MarkerNet(nn.Module):
         self.obj_cond_feature = 1 if cfg.cond_object_height else 0
 
         # Transformer parameters
-        self.d_model = 64  # Embedding dimension for the transformer
+        self.d_model = 128  # Embedding dimension for the transformer
         self.nhead = 8      # Number of attention heads in the transformer
         self.num_layers = 4 # Number of transformer encoder layers
         self.dim_feedforward = 256  # Dimension of the feedforward network in the transformer
