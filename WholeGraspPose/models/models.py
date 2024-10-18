@@ -368,8 +368,6 @@ class FullBodyGraspNet(nn.Module):
     def forward(self, verts_object, feat_object, contacts_object, markers, contacts_markers, transf_transl, **kwargs):
         object_cond = self.pointnet(l0_xyz=verts_object, l0_points=feat_object)
 
-        print(f"Object condition shape (encode): {object_cond[-1].shape}")
-
         z = self.encode(object_cond, verts_object, feat_object, contacts_object, markers, contacts_markers, transf_transl)
         z_s = z.rsample()
 
