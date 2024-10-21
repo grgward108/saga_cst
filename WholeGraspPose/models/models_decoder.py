@@ -304,7 +304,7 @@ class FullBodyGraspNet(nn.Module):
 
         self.pointnet = PointNetEncoder(hc=cfg.pointnet_hc, in_feature=cfg.obj_feature)
         # encoder fusion
-        self.enc_fusion = ResBlock(cfg.n_markers+self.cfg.pointnet_hc*8, cfg.n_neurons)
+        self.enc_fusion = ResBlock(self.marker_net.d_model + self.cfg.pointnet_hc * 8, cfg.n_neurons)
 
         self.enc_mu = nn.Linear(cfg.n_neurons, cfg.latentD)
         self.enc_var = nn.Linear(cfg.n_neurons, cfg.latentD)

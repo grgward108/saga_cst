@@ -7,7 +7,7 @@ if [ -z "$1" ]; then
 fi
 
 exp_name=$1
-objects=("toothpaste" "camera" "wineglass" "fryingpan" "binoculars" "mug")
+objects=("camera" "wineglass" "fryingpan" "binoculars" "mug")
 
 for object in "${objects[@]}"; do
     python opt_grasppose.py --exp_name $exp_name --gender male --pose_ckpt_path logs/GraspPose/cross_attention_hand_weights/snapshots/TR00_E050_net.pt --object $object --n_object_samples 25
