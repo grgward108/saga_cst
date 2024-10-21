@@ -19,7 +19,7 @@ from utils.train_helper import EarlyStopping, point2point_signed
 from utils.utils import makelogger, makepath, to_cpu
 
 from WholeGraspPose.data.dataloader import LoadData
-from WholeGraspPose.models.models2 import FullBodyGraspNet
+from WholeGraspPose.models.models_handweights import FullBodyGraspNet
 import wandb
 
 
