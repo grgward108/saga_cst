@@ -120,7 +120,10 @@ class MarkerNet(nn.Module):
         self.q_proj = nn.Linear(self.d_model, self.d_model)
         self.k_proj = nn.Linear(self.d_model, self.d_model)
         self.v_proj = nn.Linear(self.d_model, self.d_model)
-        self.hand_attention_bias = nn.Parameter(torch.tensor(1.0))  # Learnable hand bias
+        # Define separate biases for left and right hands
+        # self.left_hand_attention_bias = nn.Parameter(torch.tensor(1.0))  # Learnable left hand bias
+        self.right_hand_attention_bias = nn.Parameter(torch.tensor(1.0))  # Learnable right hand bias
+
 
         # Transformer encoder
         encoder_layer = nn.TransformerEncoderLayer(d_model=self.d_model, nhead=self.nhead, dim_feedforward=self.dim_feedforward)
@@ -143,7 +146,7 @@ class MarkerNet(nn.Module):
         self.dec_output_p = nn.Linear(n_neurons, self.n_markers)     # Outputs predicted probabilities for markers
         self.p_output = nn.Sigmoid()  # Activation function for probabilities
 
-    def enc(self, cond_object, markers, contacts_markers, transf_transl, part_labels):
+    def enc(self, cond_object, markers, contacts_markers, transf_transl, part_labels, return_attention=False):
         _, _, _, _, _, object_cond = cond_object
 
         bs = markers.size(0)
@@ -174,31 +177,31 @@ class MarkerNet(nn.Module):
         key = transformer_output  # (bs, n_markers, d_model)
         value = transformer_output  # (bs, n_markers, d_model)
 
-        # Project query, key, value
         Q = self.q_proj(query)  # (bs, 1, d_model)
         K = self.k_proj(key)    # (bs, n_markers, d_model)
         V = self.v_proj(value)  # (bs, n_markers, d_model)
 
-        # Compute attention scores
         attn_scores = torch.matmul(Q, K.transpose(-2, -1)) / math.sqrt(self.d_model)  # (bs, 1, n_markers)
 
-        # Adjust attention scores for hand markers
-        hand_labels = torch.tensor([5, 6], device=part_labels.device)  # Assuming labels 5 and 6 correspond to hands
-        is_hand_marker = (part_labels.unsqueeze(-1) == hand_labels).any(dim=-1)  # (bs, n_markers)
-        hand_mask = is_hand_marker.float().unsqueeze(1)  # (bs, 1, n_markers)
+        # Assuming hand labels are 5 for left hand and 6 for right hand
+        # left_hand_labels = torch.tensor([6], device=part_labels.device) #6 is yellow
+        right_hand_labels = torch.tensor([5], device=part_labels.device) #5 os right
 
-        adjusted_attn_scores = attn_scores + hand_mask * self.hand_attention_bias  # (bs, 1, n_markers)
+        # is_left_hand_marker = (part_labels.unsqueeze(-1) == left_hand_labels).any(dim=-1)  # (bs, n_markers)
+        is_right_hand_marker = (part_labels.unsqueeze(-1) == right_hand_labels).any(dim=-1)  # (bs, n_markers)
 
-        # Compute attention weights
+        # left_hand_mask = is_left_hand_marker.float().unsqueeze(1)  # (bs, 1, n_markers)
+        right_hand_mask = is_right_hand_marker.float().unsqueeze(1)  # (bs, 1, n_markers)
+
+        # Adjust attention scores with separate biases
+        adjusted_attn_scores = attn_scores + right_hand_mask * self.right_hand_attention_bias
+
         attn_weights = F.softmax(adjusted_attn_scores, dim=-1)  # (bs, 1, n_markers)
 
-        # Compute attention output
         attn_output = torch.matmul(attn_weights, V)  # (bs, 1, d_model)
 
-        # Expand attn_output to match the number of markers (optional based on your architecture)
         attn_output = attn_output.expand(-1, self.n_markers, -1)  # (bs, n_markers, d_model)
 
-        # Flatten attn_output
         attn_output_flat = attn_output.contiguous().view(bs, -1)  # (bs, n_markers * d_model)
 
         X0 = attn_output_flat
@@ -208,6 +211,9 @@ class MarkerNet(nn.Module):
         X = self.enc_rb1(X)
 
         X = self.enc_rb2(X)
+
+        if return_attention:
+            return X, attn_weights
 
         return X
 

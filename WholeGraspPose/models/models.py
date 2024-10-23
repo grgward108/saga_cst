@@ -116,6 +116,7 @@ class MarkerNet(nn.Module):
 
         self.object_cond_proj = nn.Linear(self.in_cond, self.d_model)
         self.cross_attn = nn.MultiheadAttention(embed_dim=self.d_model, num_heads=self.nhead)
+        
 
         # Transformer encoder
         encoder_layer = nn.TransformerEncoderLayer(d_model=self.d_model, nhead=self.nhead, dim_feedforward=self.dim_feedforward)
@@ -173,7 +174,7 @@ class MarkerNet(nn.Module):
 
 
 
-    def enc(self, cond_object, markers, contacts_markers, transf_transl):
+    def enc(self, cond_object, markers, contacts_markers, transf_transl, return_attention=False):
         _, _, _, _, _, object_cond = cond_object
 
         bs = markers.size(0)
@@ -218,6 +219,11 @@ class MarkerNet(nn.Module):
         X = self.enc_rb1(X)
 
         X = self.enc_rb2(X)
+
+        attn_weights = F.softmax(attn_weights, dim=-1)
+
+        if return_attention:
+            return X, attn_weights
 
         return X
 
