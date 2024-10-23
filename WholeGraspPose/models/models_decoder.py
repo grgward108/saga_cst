@@ -120,7 +120,10 @@ class MarkerNet(nn.Module):
         self.q_proj = nn.Linear(self.d_model, self.d_model)
         self.k_proj = nn.Linear(self.d_model, self.d_model)
         self.v_proj = nn.Linear(self.d_model, self.d_model)
-        self.hand_attention_bias = nn.Parameter(torch.tensor(1.0))  # Learnable hand bias
+        # Define separate biases for left and right hands
+        self.left_hand_attention_bias = nn.Parameter(torch.tensor(1.0))  # Learnable left hand bias
+        self.right_hand_attention_bias = nn.Parameter(torch.tensor(1.0))  # Learnable right hand bias
+
 
         # Transformer encoder
         encoder_layer = nn.TransformerEncoderLayer(
@@ -177,12 +180,19 @@ class MarkerNet(nn.Module):
         # Compute attention scores
         attn_scores = torch.matmul(query, key.transpose(-2, -1)) / math.sqrt(self.d_model)  # (bs, 1, n_markers)
 
-        # Adjust attention scores for hand markers
-        hand_labels = torch.tensor([5, 6], device=part_labels.device)  # Assuming labels 5 and 6 correspond to hands
-        is_hand_marker = (part_labels.unsqueeze(-1) == hand_labels).any(dim=-1)  # (bs, n_markers)
-        hand_mask = is_hand_marker.float().unsqueeze(1)  # (bs, 1, n_markers)
+        # Assuming hand labels are 5 for left hand and 6 for right hand
+        left_hand_labels = torch.tensor([5], device=part_labels.device)
+        right_hand_labels = torch.tensor([6], device=part_labels.device)
 
-        adjusted_attn_scores = attn_scores + hand_mask * self.hand_attention_bias  # (bs, 1, n_markers)
+        is_left_hand_marker = (part_labels.unsqueeze(-1) == left_hand_labels).any(dim=-1)  # (bs, n_markers)
+        is_right_hand_marker = (part_labels.unsqueeze(-1) == right_hand_labels).any(dim=-1)  # (bs, n_markers)
+
+        left_hand_mask = is_left_hand_marker.float().unsqueeze(1)  # (bs, 1, n_markers)
+        right_hand_mask = is_right_hand_marker.float().unsqueeze(1)  # (bs, 1, n_markers)
+
+        # Adjust attention scores with separate biases
+        adjusted_attn_scores = attn_scores + left_hand_mask * self.left_hand_attention_bias + right_hand_mask * self.right_hand_attention_bias
+
 
         # Compute attention weights
         attn_weights = F.softmax(adjusted_attn_scores, dim=-1)  # (bs, 1, n_markers)
