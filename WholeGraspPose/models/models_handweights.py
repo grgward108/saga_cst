@@ -122,7 +122,7 @@ class MarkerNet(nn.Module):
         self.v_proj = nn.Linear(self.d_model, self.d_model)
         # Define separate biases for left and right hands
         # self.left_hand_attention_bias = nn.Parameter(torch.tensor(1.0))  # Learnable left hand bias
-        self.right_hand_attention_bias = nn.Parameter(torch.tensor(1.0))  # Learnable right hand bias
+        self.right_hand_attention_bias = 0.9 # Learnable right hand bias
 
 
         # Transformer encoder
