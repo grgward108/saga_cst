@@ -163,7 +163,7 @@ class MarkerNet(nn.Module):
         self.output_proj_p = nn.Linear(self.d_model, 1)
         self.p_output = nn.Sigmoid()  
 
-    def enc(self, cond_object, markers, contacts_markers, transf_transl, part_labels, return_attention=False):
+    def enc(self, cond_object, markers, contacts_markers, transf_transl, part_labels, marker_object_distance, return_attention=False):
         _, _, _, _, _, object_cond = cond_object
 
         bs = markers.size(0)
@@ -187,50 +187,52 @@ class MarkerNet(nn.Module):
         transformer_output = transformer_output.permute(1, 0, 2)  # Shape: (bs, n_markers, d_model)
 
         # Project object condition to embedding dimension
-        object_cond_proj = self.object_cond_proj(object_cond)  # Shape: (bs, d_model)
+        # object_cond_proj = self.object_cond_proj(object_cond)  # Shape: (bs, d_model)
 
-        # Cross-Attention with Hand Bias
-        query = object_cond_proj.unsqueeze(1)  # (bs, 1, d_model)
-        key = transformer_output  # (bs, n_markers, d_model)
-        value = transformer_output  # (bs, n_markers, d_model)
+        # # Cross-Attention with Hand Bias
+        # query = object_cond_proj.unsqueeze(1)  # (bs, 1, d_model)
+        # key = transformer_output  # (bs, n_markers, d_model)
+        # value = transformer_output  # (bs, n_markers, d_model)
 
-        Q = self.q_proj(query)  # (bs, 1, d_model)
-        K = self.k_proj(key)    # (bs, n_markers, d_model)
-        V = self.v_proj(value)  # (bs, n_markers, d_model)
+        # Q = self.q_proj(query)  # (bs, 1, d_model)
+        # K = self.k_proj(key)    # (bs, n_markers, d_model)
+        # V = self.v_proj(value)  # (bs, n_markers, d_model)
 
-        attn_scores = torch.matmul(Q, K.transpose(-2, -1)) / math.sqrt(self.d_model)  # (bs, 1, n_markers)
+        # attn_scores = torch.matmul(Q, K.transpose(-2, -1)) / math.sqrt(self.d_model)  # (bs, 1, n_markers)
 
         # Assuming hand labels are 5 for left hand and 6 for right hand
         # left_hand_labels = torch.tensor([6], device=part_labels.device) #6 is yellow
-        right_hand_labels = torch.tensor([5], device=part_labels.device) #5 os right
+        # right_hand_labels = torch.tensor([5], device=part_labels.device) #5 os right
 
-        # is_left_hand_marker = (part_labels.unsqueeze(-1) == left_hand_labels).any(dim=-1)  # (bs, n_markers)
-        is_right_hand_marker = (part_labels.unsqueeze(-1) == right_hand_labels).any(dim=-1)  # (bs, n_markers)
+        # # is_left_hand_marker = (part_labels.unsqueeze(-1) == left_hand_labels).any(dim=-1)  # (bs, n_markers)
+        # is_right_hand_marker = (part_labels.unsqueeze(-1) == right_hand_labels).any(dim=-1)  # (bs, n_markers)
 
-        # left_hand_mask = is_left_hand_marker.float().unsqueeze(1)  # (bs, 1, n_markers)
-        right_hand_mask = is_right_hand_marker.float().unsqueeze(1)  # (bs, 1, n_markers)
+        # # left_hand_mask = is_left_hand_marker.float().unsqueeze(1)  # (bs, 1, n_markers)
+        # right_hand_mask = is_right_hand_marker.float().unsqueeze(1)  # (bs, 1, n_markers)
 
-        # Adjust attention scores with separate biases
-        adjusted_attn_scores = attn_scores + right_hand_mask * self.right_hand_attention_bias
+        marker_distance_weights = marker_object_distance.unsqueeze(1)  # (bs, 1, n_markers)
 
-        attn_weights = F.softmax(adjusted_attn_scores, dim=-1)  # (bs, 1, n_markers)
+        # Ensure marker_distance_weights has the shape (64, 143, 1) before expanding
+        marker_distance_weights = marker_distance_weights.permute(0, 2, 1)  # Shape: (64, 143, 1)
+        marker_distance_weights = marker_distance_weights.expand(-1, -1, transformer_output.size(-1))  # Shape: (64, 143, 128)
 
-        attn_output = torch.matmul(attn_weights, V)  # (bs, 1, d_model)
+        weighted_transformer_output = transformer_output * marker_distance_weights
 
-        attn_output = attn_output.expand(-1, self.n_markers, -1)  # (bs, n_markers, d_model)
 
-        attn_output_flat = attn_output.contiguous().view(bs, -1)  # (bs, n_markers * d_model)
+        # attn_weights = F.softmax(adjusted_attn_scores, dim=-1)  # (bs, 1, n_markers)
 
-        X0 = attn_output_flat
+        # attn_output = torch.matmul(attn_weights, V)  # (bs, 1, d_model)
 
+        # attn_output = attn_output.expand(-1, self.n_markers, -1)  # (bs, n_markers, d_model)
+
+        # attn_output_flat = attn_output.contiguous().view(bs, -1)  # (bs, n_markers * d_model)
+
+        X0 = weighted_transformer_output.contiguous().view(bs, -1)  # (bs, n_markers * d_model)
         X = F.relu(self.fc_out(X0))
 
         X = self.enc_rb1(X)
 
         X = self.enc_rb2(X)
-
-        if return_attention:
-            return X, attn_weights
 
         return X
 
@@ -359,9 +361,9 @@ class FullBodyGraspNet(nn.Module):
         self.enc_var = nn.Linear(cfg.n_neurons, cfg.latentD)
 
 
-    def encode(self, object_cond, verts_object, feat_object, contacts_object, markers, contacts_markers, transf_transl, part_labels):
+    def encode(self, object_cond, verts_object, feat_object, contacts_object, markers, contacts_markers, transf_transl, part_labels, marker_object_distance):
         # marker branch
-        marker_feat = self.marker_net.enc(object_cond, markers, contacts_markers, transf_transl, part_labels)   # [B, n_neurons=1024]
+        marker_feat = self.marker_net.enc(object_cond, markers, contacts_markers, transf_transl, part_labels, marker_object_distance)   # [B, n_neurons=1024]
 
         # contact branch
         contact_feat = self.contact_net.enc(contacts_object, verts_object, feat_object)  # [B, hc*8]
@@ -384,9 +386,9 @@ class FullBodyGraspNet(nn.Module):
 
         return markers_xyz_pred.view(bs, -1, 3), markers_p_pred, contact_pred
 
-    def forward(self, verts_object, feat_object, contacts_object, markers, contacts_markers, transf_transl, part_labels, **kwargs):
+    def forward(self, verts_object, feat_object, contacts_object, markers, contacts_markers, transf_transl, part_labels, marker_object_distance, **kwargs):
         object_cond = self.pointnet(l0_xyz=verts_object, l0_points=feat_object)
-        z = self.encode(object_cond, verts_object, feat_object, contacts_object, markers, contacts_markers, transf_transl, part_labels)
+        z = self.encode(object_cond, verts_object, feat_object, contacts_object, markers, contacts_markers, transf_transl, part_labels, marker_object_distance)
         z_s = z.rsample()
 
         markers_xyz_pred, markers_p_pred, object_p_pred = self.decode(z_s, object_cond, verts_object, feat_object, transf_transl)
