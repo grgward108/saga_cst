@@ -99,6 +99,44 @@ def point2point_signed(
         return y2x_signed, x2y_signed, yidx_near, xidx_near
     else:
         return y2x_signed, x2y_signed, yidx_near, xidx_near, y2x, x2y
+    
+
+def point2point_signed_dummy(
+    x,
+    y,
+    x_normals=None,
+    y_normals=None,
+    return_vector=False,
+    transform_distances=False
+):
+    """
+    Dummy version of the signed distance between two point clouds.
+    Returns dummy data instead of actual distances for testing purposes.
+    """
+    N, P1, D = x.shape
+    _, P2, _ = y.shape
+
+    # Create dummy signed distances
+    y2x_signed = torch.rand(N, P2)  # Dummy distances for y-to-x
+    x2y_signed = torch.rand(N, P1)  # Dummy distances for x-to-y
+
+    # Optionally apply transformation `exp(-5 * distance)`
+    if transform_distances:
+        y2x_signed = torch.exp(-5 * y2x_signed)
+        x2y_signed = torch.exp(-5 * x2y_signed)
+
+    # Create dummy indices for nearest neighbors
+    yidx_near = torch.randint(0, P1, (N, P2))  # Dummy indices for y-to-x
+    xidx_near = torch.randint(0, P2, (N, P1))  # Dummy indices for x-to-y
+
+    if not return_vector:
+        return y2x_signed, x2y_signed, yidx_near, xidx_near
+    else:
+        # Dummy vectors for distance vectors (optional output)
+        y2x_vector = torch.rand(N, P2, D)
+        x2y_vector = torch.rand(N, P1, D)
+        return y2x_signed, x2y_signed, yidx_near, xidx_near, y2x_vector, x2y_vector
+
 
 
 class EarlyStopping:
