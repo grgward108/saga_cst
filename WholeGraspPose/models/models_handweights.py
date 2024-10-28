@@ -115,6 +115,8 @@ class MarkerNet(nn.Module):
         input_dim = 3 + self.obj_cond_feature  # Input features per marker (3 for x, y, z, plus object height if used)
         self.input_proj = nn.Linear(input_dim, self.d_model)  # Projects marker inputs to the embedding dimension
 
+        self.input_proj_decoder = nn.Linear(self.d_model + self.in_cond + self.obj_cond_feature, self.d_model)
+
         self.object_cond_proj = nn.Linear(self.in_cond, self.d_model)
         # Cross-Attention parameters
         self.q_proj = nn.Linear(self.d_model, self.d_model)
@@ -145,6 +147,21 @@ class MarkerNet(nn.Module):
         self.dec_output_xyz = nn.Linear(n_neurons, self.in_feature)  # Outputs predicted marker positions
         self.dec_output_p = nn.Linear(n_neurons, self.n_markers)     # Outputs predicted probabilities for markers
         self.p_output = nn.Sigmoid()  # Activation function for probabilities
+
+
+        # Decoder: Project latent vector to sequence embeddings
+        self.z_to_seq = nn.Linear(latentD, self.n_markers * self.d_model)
+
+        # Transformer decoder layers (using encoder layers for simplicity)
+        decoder_layer = nn.TransformerEncoderLayer(
+            d_model=self.d_model, nhead=self.nhead,
+            dim_feedforward=self.dim_feedforward, batch_first=True)
+        self.transformer_decoder_layers = nn.TransformerEncoder(decoder_layer, num_layers=self.num_layers)
+
+        # Output projection layers
+        self.output_proj_xyz = nn.Linear(self.d_model, 3)
+        self.output_proj_p = nn.Linear(self.d_model, 1)
+        self.p_output = nn.Sigmoid()  
 
     def enc(self, cond_object, markers, contacts_markers, transf_transl, part_labels, return_attention=False):
         _, _, _, _, _, object_cond = cond_object
@@ -220,26 +237,35 @@ class MarkerNet(nn.Module):
     def dec(self, Z, cond_object, transf_transl):
         # Extract object condition feature
         _, _, _, _, _, object_cond = cond_object
-        # Concatenate latent vector Z and object condition features
-        X0 = torch.cat([Z, object_cond], dim=1).float()
 
-        # Pass through first residual block
-        X = self.dec_rb1(X0, True)
+        bs = Z.size(0)
 
-        # Include object height in XYZ decoder (optional)
+        # Project Z to sequence embeddings
+        z_seq = self.z_to_seq(Z).view(bs, self.n_markers, self.d_model)  # Shape: (bs, n_markers, d_model)
+
+        object_cond_expanded = object_cond.unsqueeze(1).expand(-1, self.n_markers, -1)  # Shape: (bs, n_markers, object_cond_dim)
+
+        z_seq = torch.cat([z_seq, object_cond_expanded], dim=2)  # Shape: (bs, n_markers, d_model + object_cond_dim)
+
+
         if self.obj_cond_feature == 1:
-            object_height = transf_transl[:, -1, None]
-            X_xyz_input = torch.cat([X0, X, object_height], dim=1).float()
-        else:
-            X_xyz_input = torch.cat([X0, X], dim=1).float()
+            object_height = transf_transl[:, -1, None].unsqueeze(1).expand(-1, self.n_markers, -1)  # Shape: (bs, n_markers, 1)
+            z_seq = torch.cat([z_seq, object_height], dim=2)  # Now shape is (bs, n_markers, d_model + object_cond_dim + 1)
 
-        # Pass through residual blocks for position and probability predictions
-        X_xyz = self.dec_rb2_xyz(X_xyz_input, True)
-        X_p = self.dec_rb2_p(torch.cat([X0, X], dim=1).float(), True)
 
-        # Predict marker positions and probabilities
-        xyz_pred = self.dec_output_xyz(X_xyz)
-        p_pred = self.p_output(self.dec_output_p(X_p))
+        z_seq = self.input_proj_decoder(z_seq) # Shape: (bs, n_markers, d_model)
+        # Apply positional encoding
+        z_seq = self.pos_encoder(z_seq)
+
+        # Pass through transformer decoder layers
+        transformer_output = self.transformer_decoder_layers(z_seq)  # Shape: (bs, n_markers, d_model)
+
+        # Predict positions and probabilities
+        xyz_pred = self.output_proj_xyz(transformer_output)  # Shape: (bs, n_markers, 3)
+        p_pred = self.p_output(self.output_proj_p(transformer_output).squeeze(-1))  # Shape: (bs, n_markers)
+
+        # Flatten the xyz predictions to match the expected output shape
+        xyz_pred = xyz_pred.view(bs, -1)
 
         return xyz_pred, p_pred
 

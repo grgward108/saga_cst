@@ -7,6 +7,7 @@ import numpy as np
 import torch
 from smplx.lbs import batch_rodrigues
 from torch.utils import data
+from utils.train_helper import point2point_signed
 
 import logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -148,8 +149,10 @@ class LoadData(data.Dataset):
                 self.objs_frames[obj_name] = list(range(index, index+data['verts_object'].shape[0]))
             index += data['verts_object'].shape[0]
         output['transf_transl'] = torch.tensor(np.concatenate(transf_transl_list, axis=0))
-        output['markers'] = torch.tensor(np.concatenate(markers_list, axis=0))              # (B, 99, 3)
+        output['markers'] = torch.tensor(np.concatenate(markers_list, axis=0))              # (B, 143, 3)
         output['verts_object'] = torch.tensor(np.concatenate(verts_object_list, axis=0))    # (B, 2048, 3)
+        output['marker_object_distance'] = point2point_signed(output['markers'], output['verts_object'])
+        print(output['marker_object_distance'].shape)
         output['contacts_object'] = torch.tensor(np.concatenate(contacts_object_list, axis=0))    # (B, 2048, 3)
         output['contacts_markers'] = torch.tensor(np.concatenate(contacts_markers_list, axis=0))    # (B, 2048, 3)
         output['normal_object'] = torch.tensor(np.concatenate(normal_object_list, axis=0))    # (B, 2048, 3)
@@ -177,7 +180,8 @@ class LoadData(data.Dataset):
             data_out['contacts_markers'] = self.ds['contacts_markers'][idx]
 
             data_out['part_labels'] = self.ds['part_labels'][idx].long()
-
+            data_out['marker_object_distance'] = self.ds['marker_object_distance'][idx]
+            print(data_out['marker_object_distance'].shape)
             data_out['verts_object'] = self.ds['verts_object'][idx]
             data_out['normal_object'] = self.ds['normal_object'][idx]
             data_out['global_orient_object'] = self.ds['global_orient_object'][idx]

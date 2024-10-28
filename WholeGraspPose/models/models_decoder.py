@@ -115,6 +115,9 @@ class MarkerNet(nn.Module):
         input_dim = 3 + self.obj_cond_feature  # Input features per marker (3 for x, y, z, plus object height if used)
         self.input_proj = nn.Linear(input_dim, self.d_model)  # Projects marker inputs to the embedding dimension
 
+
+        self.input_proj_decoder = nn.Linear(self.d_model + self.in_cond + self.obj_cond_feature, self.d_model)
+
         self.object_cond_proj = nn.Linear(self.in_cond, self.d_model)
 
         self.q_proj = nn.Linear(self.d_model, self.d_model)
@@ -209,11 +212,25 @@ class MarkerNet(nn.Module):
         return X
 
     def dec(self, Z, cond_object, transf_transl):
+        # Extract object condition feature
+        _, _, _, _, _, object_cond = cond_object
+
         bs = Z.size(0)
 
         # Project Z to sequence embeddings
         z_seq = self.z_to_seq(Z).view(bs, self.n_markers, self.d_model)  # Shape: (bs, n_markers, d_model)
 
+        object_cond_expanded = object_cond.unsqueeze(1).expand(-1, self.n_markers, -1)  # Shape: (bs, n_markers, object_cond_dim)
+
+        z_seq = torch.cat([z_seq, object_cond_expanded], dim=2)  # Shape: (bs, n_markers, d_model + object_cond_dim)
+
+
+        if self.obj_cond_feature == 1:
+            object_height = transf_transl[:, -1, None].unsqueeze(1).expand(-1, self.n_markers, -1)  # Shape: (bs, n_markers, 1)
+            z_seq = torch.cat([z_seq, object_height], dim=2)  # Now shape is (bs, n_markers, d_model + object_cond_dim + 1)
+
+
+        z_seq = self.input_proj_decoder(z_seq) # Shape: (bs, n_markers, d_model)
         # Apply positional encoding
         z_seq = self.pos_encoder(z_seq)
 
