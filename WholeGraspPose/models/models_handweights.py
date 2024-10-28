@@ -253,7 +253,7 @@ class MarkerNet(nn.Module):
             z_seq = torch.cat([z_seq, object_height], dim=2)  # Now shape is (bs, n_markers, d_model + object_cond_dim + 1)
 
 
-        z_seq = self.input_proj_decoder(z_seq) # Shape: (bs, n_markers, d_model)
+        z_seq = self.input_proj_decoder(z_seq.float())  # Shape: (bs, n_markers, d_model)
         # Apply positional encoding
         z_seq = self.pos_encoder(z_seq)
 
