@@ -151,7 +151,7 @@ class LoadData(data.Dataset):
         output['transf_transl'] = torch.tensor(np.concatenate(transf_transl_list, axis=0))
         output['markers'] = torch.tensor(np.concatenate(markers_list, axis=0))              # (B, 143, 3)
         output['verts_object'] = torch.tensor(np.concatenate(verts_object_list, axis=0))    # (B, 2048, 3)
-        output['marker_object_distance'] = point2point_signed(output['markers'], output['verts_object'])
+        _, output['marker_object_distance'], _, _  = point2point_signed(output['markers'], output['verts_object'], transform_distances=True)
         print(output['marker_object_distance'].shape)
         output['contacts_object'] = torch.tensor(np.concatenate(contacts_object_list, axis=0))    # (B, 2048, 3)
         output['contacts_markers'] = torch.tensor(np.concatenate(contacts_markers_list, axis=0))    # (B, 2048, 3)
@@ -181,7 +181,7 @@ class LoadData(data.Dataset):
 
             data_out['part_labels'] = self.ds['part_labels'][idx].long()
             data_out['marker_object_distance'] = self.ds['marker_object_distance'][idx]
-            print(data_out['marker_object_distance'].shape)
+            # print(data_out['marker_object_distance'].shape)
             data_out['verts_object'] = self.ds['verts_object'][idx]
             data_out['normal_object'] = self.ds['normal_object'][idx]
             data_out['global_orient_object'] = self.ds['global_orient_object'][idx]
