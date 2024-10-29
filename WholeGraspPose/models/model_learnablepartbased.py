@@ -47,26 +47,6 @@ class ResBlock(nn.Module):
             return self.ll(Xout)
         return Xout
 
-class PositionalEncoding(nn.Module):
-    def __init__(self, d_model, max_len=5000):
-        super(PositionalEncoding, self).__init__()
-        pe = torch.zeros(max_len, d_model)
-        position = torch.arange(0, max_len, dtype=torch.float32).unsqueeze(1)
-        div_term = torch.exp(torch.arange(0, d_model, 2).float() * (-np.log(10000.0) / d_model))
-        pe[:, 0::2] = torch.sin(position * div_term) 
-        pe[:, 1::2] = torch.cos(position * div_term) 
-        pe = pe.unsqueeze(0)  
-        self.register_buffer('pe', pe)
-
-    def forward(self, x):
-        """
-        Args:
-            x: Tensor of shape (batch_size, seq_len, d_model)
-        """
-        x = x + self.pe[:, :x.size(1), :]
-        return x
-
-
 class PointNetEncoder(nn.Module):
 
     def __init__(self,
@@ -108,9 +88,6 @@ class MarkerNet(nn.Module):
         self.num_layers = 4 # Number of transformer encoder layers
         self.dim_feedforward = 256  # Dimension of the feedforward network in the transformer
 
-        # Positional encoding
-        self.pos_encoder = PositionalEncoding(self.d_model, max_len=self.n_markers)
-
         # Input embedding layer
         input_dim = 3 + self.obj_cond_feature  # Input features per marker (3 for x, y, z, plus object height if used)
         self.input_proj = nn.Linear(input_dim, self.d_model)  # Projects marker inputs to the embedding dimension
@@ -125,6 +102,10 @@ class MarkerNet(nn.Module):
         # Define separate biases for left and right hands
         # self.left_hand_attention_bias = nn.Parameter(torch.tensor(1.0))  # Learnable left hand bias
         self.right_hand_attention_bias = 0.9 # Learnable right hand bias
+
+        # Learnable part embeddings
+        self.num_parts = 9  # Labels 0 to 8
+        self.part_embedding = nn.Embedding(self.num_parts, self.d_model)
 
 
         # Transformer encoder
@@ -179,53 +160,23 @@ class MarkerNet(nn.Module):
 
         # Project marker features to embedding dimension
         marker_embeds = self.input_proj(markers)  # Shape: (bs, n_markers, d_model)
-        marker_embeds = self.pos_encoder(marker_embeds)
+        # apply learnable part-based embeddings in the marker embeddings
+        part_embeds = self.part_embedding(part_labels)  # Shape: (bs, n_markers, d_model)
+        marker_embeds = marker_embeds + part_embeds
 
         # Transformer Encoder
         marker_embeds = marker_embeds.permute(1, 0, 2)  # Shape: (n_markers, bs, d_model)
         transformer_output = self.transformer_encoder(marker_embeds)
         transformer_output = transformer_output.permute(1, 0, 2)  # Shape: (bs, n_markers, d_model)
 
-        # Project object condition to embedding dimension
-        # object_cond_proj = self.object_cond_proj(object_cond)  # Shape: (bs, d_model)
-
-        # # Cross-Attention with Hand Bias
-        # query = object_cond_proj.unsqueeze(1)  # (bs, 1, d_model)
-        # key = transformer_output  # (bs, n_markers, d_model)
-        # value = transformer_output  # (bs, n_markers, d_model)
-
-        # Q = self.q_proj(query)  # (bs, 1, d_model)
-        # K = self.k_proj(key)    # (bs, n_markers, d_model)
-        # V = self.v_proj(value)  # (bs, n_markers, d_model)
-
-        # attn_scores = torch.matmul(Q, K.transpose(-2, -1)) / math.sqrt(self.d_model)  # (bs, 1, n_markers)
-
-        # Assuming hand labels are 5 for left hand and 6 for right hand
-        # left_hand_labels = torch.tensor([6], device=part_labels.device) #6 is yellow
-        # right_hand_labels = torch.tensor([5], device=part_labels.device) #5 os right
-
-        # is_left_hand_marker = (part_labels.unsqueeze(-1) == left_hand_labels).any(dim=-1)  # (bs, n_markers)
-        # is_right_hand_marker = (part_labels.unsqueeze(-1) == right_hand_labels).any(dim=-1)  # (bs, n_markers)
-
-        # # left_hand_mask = is_left_hand_marker.float().unsqueeze(1)  # (bs, 1, n_markers)
-        # right_hand_mask = is_right_hand_marker.float().unsqueeze(1)  # (bs, 1, n_markers)
-
         marker_distance_weights = marker_object_distance.unsqueeze(1)  # (bs, 1, n_markers)
 
         # Ensure marker_distance_weights has the shape (64, 143, 1) before expanding
         marker_distance_weights = marker_distance_weights.permute(0, 2, 1)  # Shape: (64, 143, 1)
+        
         marker_distance_weights = marker_distance_weights.expand(-1, -1, transformer_output.size(-1))  # Shape: (64, 143, 128)
 
         weighted_transformer_output = transformer_output * marker_distance_weights
-
-
-        # attn_weights = F.softmax(adjusted_attn_scores, dim=-1)  # (bs, 1, n_markers)
-
-        # attn_output = torch.matmul(attn_weights, V)  # (bs, 1, d_model)
-
-        # attn_output = attn_output.expand(-1, self.n_markers, -1)  # (bs, n_markers, d_model)
-
-        # attn_output_flat = attn_output.contiguous().view(bs, -1)  # (bs, n_markers * d_model)
 
         X0 = weighted_transformer_output.contiguous().view(bs, -1)  # (bs, n_markers * d_model)
         X = F.relu(self.fc_out(X0))
