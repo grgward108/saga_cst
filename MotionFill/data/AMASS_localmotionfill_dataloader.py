@@ -11,7 +11,7 @@ import scipy.ndimage.filters as filters
 import smplx
 import torch
 import torch.nn.functional as F
-from scipy.spatial.transform import Rotation as R
+from scipy.spatial.transform import Rotation as Rwhy 
 from torch.utils import data
 from torch.utils.data import DataLoader
 from tqdm import tqdm
