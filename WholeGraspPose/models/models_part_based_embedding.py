@@ -102,7 +102,7 @@ class MarkerNet(nn.Module):
         self.obj_cond_feature = 1 if cfg.cond_object_height else 0
 
         # Transformer parameters
-        self.d_model = 128  # Embedding dimension for the transformer
+        self.d_model = 64  # Embedding dimension for the transformer
         self.nhead = 8      # Number of attention heads in the transformer
         self.num_layers = 4 # Number of transformer encoder layers
         self.dim_feedforward = 256  # Dimension of the feedforward network in the transformer
@@ -110,13 +110,15 @@ class MarkerNet(nn.Module):
         # Positional encoding
         self.pos_encoder = PositionalEncoding(self.d_model, max_len=self.n_markers)
 
+        self.embedding_dim = 3  # Set embedding dimension
+        input_dim = 3 + self.embedding_dim + self.obj_cond_feature
+
+
         # Input embedding layer
-        input_dim = 3 + self.obj_cond_feature  # Input features per marker (3 for x, y, z, plus object height if used)
         self.input_proj = nn.Linear(input_dim, self.d_model)  # Projects marker inputs to the embedding dimension
 
         self.object_cond_proj = nn.Linear(self.in_cond, self.d_model)
         self.cross_attn = nn.MultiheadAttention(embed_dim=self.d_model, num_heads=self.nhead)
-        
 
         # Transformer encoder
         encoder_layer = nn.TransformerEncoderLayer(d_model=self.d_model, nhead=self.nhead, dim_feedforward=self.dim_feedforward)
@@ -141,56 +143,60 @@ class MarkerNet(nn.Module):
 
     def create_fixed_part_embedding(self):
         """
-        Create fixed part-based embeddings for each body part. 
-        Assign fixed vectors for each part (e.g., head, hands, legs).
+        Create fixed part-based embeddings for each body part.
+        Returns a tensor of shape (num_parts, embedding_dim)
         """
-        part_embeddings = {
-            'head_and_neck': torch.tensor([1, 0, 0], dtype=torch.float32),
-            'trunk': torch.tensor([0, 1, 0], dtype=torch.float32),
-            'right_upper_limb': torch.tensor([0, 0, 1], dtype=torch.float32),
-            'left_upper_limb': torch.tensor([1, 1, 0], dtype=torch.float32),
-            'right_hand': torch.tensor([1, 0, 1], dtype=torch.float32),
-            'left_hand': torch.tensor([0, 1, 1], dtype=torch.float32),
-            'left_legs': torch.tensor([0.5, 0.5, 0], dtype=torch.float32),
-            'right_legs': torch.tensor([0.5, 0, 0.5], dtype=torch.float32)
-        }
+        num_parts = 9  # Including label 0 for unassigned
+        embedding_dim = self.embedding_dim
+        part_embeddings = torch.zeros((num_parts, embedding_dim), dtype=torch.float32)
+        
+        # Define fixed embeddings for each part
+        part_embeddings[0] = torch.tensor([0.0, 0.0, 0.0])  # Unassigned
+        part_embeddings[1] = torch.tensor([1.0, 0.0, 0.0])  # head_and_neck
+        part_embeddings[2] = torch.tensor([0.0, 1.0, 0.0])  # trunk
+        part_embeddings[3] = torch.tensor([0.0, 0.0, 1.0])  # right_upper_limb
+        part_embeddings[4] = torch.tensor([1.0, 1.0, 0.0])  # left_upper_limb
+        part_embeddings[5] = torch.tensor([1.0, 0.0, 1.0])  # right_hand
+        part_embeddings[6] = torch.tensor([0.0, 1.0, 1.0])  # left_hand
+        part_embeddings[7] = torch.tensor([0.5, 0.5, 0.0])  # left_legs
+        part_embeddings[8] = torch.tensor([0.5, 0.0, 0.5])  # right_legs
+        
         return part_embeddings
+
 
     def get_part_embeddings(self, part_labels):
         """
         Assign fixed embeddings based on part labels.
-        part_labels: Tensor of shape (batch_size, n_markers) representing the part labels for each marker.
-        Returns a tensor of shape (batch_size, n_markers, 3).
+        part_labels: Tensor of shape (batch_size, n_markers)
+        Returns a tensor of shape (batch_size, n_markers, embedding_dim)
         """
-        batch_size, n_markers = part_labels.shape
-        part_embeds = torch.zeros((batch_size, n_markers, 3), dtype=torch.float32).to(part_labels.device)
-
-        # Apply the corresponding part embedding based on the part label
-        for part_name, embed in self.part_based_embedding.items():
-            part_index = int(part_name.split("_")[0])  
-            part_embeds[part_labels == part_index] = embed
-
+        # Ensure part_labels are long integers
+        part_labels = part_labels.long()
+        
+        # Index into the embeddings
+        part_embeds = self.part_based_embedding[part_labels]  # Shape: (batch_size, n_markers, embedding_dim)
+        
         return part_embeds
 
 
-
-    def enc(self, cond_object, markers, contacts_markers, transf_transl, return_attention=False):
+    def enc(self, cond_object, markers, contacts_markers, transf_transl, part_labels):
         _, _, _, _, _, object_cond = cond_object
 
         bs = markers.size(0)
-
         markers = markers.view(bs, self.n_markers, 3).float()
+        part_labels = part_labels.view(bs, self.n_markers)
 
         contacts_markers = contacts_markers.float()
-
-        transf_transl = transf_transl.float()
+        part_embeds = self.get_part_embeddings(part_labels)
 
         if self.obj_cond_feature == 1:
             object_height = transf_transl[:, -1, None].unsqueeze(1).repeat(1, self.n_markers, 1)
-            markers = torch.cat([markers, object_height], dim=-1)
+            markers_input = torch.cat([markers, part_embeds, object_height], dim=-1)
+        else:
+            markers_input = torch.cat([markers, part_embeds], dim=-1)
 
         # Project marker features to embedding dimension
-        marker_embeds = self.input_proj(markers)  # Shape: (bs, n_markers, d_model)
+        marker_embeds = self.input_proj(markers_input)  # Shape: (bs, n_markers, d_model)
         marker_embeds = self.pos_encoder(marker_embeds)
 
         marker_embeds = marker_embeds.permute(1, 0, 2)  # Shape: (n_markers, bs, d_model)
@@ -199,9 +205,7 @@ class MarkerNet(nn.Module):
 
         # Project object condition to embedding dimension
         object_cond_proj = self.object_cond_proj(object_cond)  # Shape: (bs, d_model)
-
         object_cond_proj = object_cond_proj.unsqueeze(0)  # Shape: (1, bs, d_model)
-
 
         # Cross-Attention
         attn_output, attn_weights = self.cross_attn(
@@ -211,24 +215,13 @@ class MarkerNet(nn.Module):
         )
 
         attn_output = attn_output.permute(1, 0, 2).contiguous().view(bs, -1)  # Shape: (bs, n_markers * d_model)
-
         X0 = attn_output
 
         X = F.relu(self.fc_out(X0))
-
         X = self.enc_rb1(X)
-
         X = self.enc_rb2(X)
 
-        attn_weights = F.softmax(attn_weights, dim=-1)
-
-        if return_attention:
-            return X, attn_weights
-
         return X
-
-
-
 
     def dec(self, Z, cond_object, transf_transl):
         # Extract object condition feature
@@ -346,18 +339,17 @@ class FullBodyGraspNet(nn.Module):
         self.enc_var = nn.Linear(cfg.n_neurons, cfg.latentD)
 
 
-    def encode(self, object_cond, verts_object, feat_object, contacts_object, markers, contacts_markers, transf_transl):
-        # marker branch
-        marker_feat = self.marker_net.enc(object_cond, markers, contacts_markers, transf_transl)   # [B, n_neurons=1024]
-
-        # contact branch
-        contact_feat = self.contact_net.enc(contacts_object, verts_object, feat_object)  # [B, hc*8]
-
-        # fusion
+    def encode(self, object_cond, verts_object, feat_object, contacts_object, markers, contacts_markers, transf_transl, part_labels):
+        # Marker branch
+        marker_feat = self.marker_net.enc(object_cond, markers, contacts_markers, transf_transl, part_labels)
+        # Contact branch
+        contact_feat = self.contact_net.enc(contacts_object, verts_object, feat_object)
+        # Fusion
         X = torch.cat([marker_feat, contact_feat], dim=-1)
         X = self.enc_fusion(X, True)
 
         return torch.distributions.normal.Normal(self.enc_mu(X), F.softplus(self.enc_var(X)))
+
 
 
     def decode(self, Z, object_cond, verts_object, feat_object, transf_transl):
@@ -371,10 +363,10 @@ class FullBodyGraspNet(nn.Module):
 
         return markers_xyz_pred.view(bs, -1, 3), markers_p_pred, contact_pred
 
-    def forward(self, verts_object, feat_object, contacts_object, markers, contacts_markers, transf_transl, **kwargs):
+    def forward(self, verts_object, feat_object, contacts_object, markers, contacts_markers, transf_transl, part_labels, **kwargs):
         object_cond = self.pointnet(l0_xyz=verts_object, l0_points=feat_object)
 
-        z = self.encode(object_cond, verts_object, feat_object, contacts_object, markers, contacts_markers, transf_transl)
+        z = self.encode(object_cond, verts_object, feat_object, contacts_object, markers, contacts_markers, transf_transl, part_labels)
         z_s = z.rsample()
 
         markers_xyz_pred, markers_p_pred, object_p_pred = self.decode(z_s, object_cond, verts_object, feat_object, transf_transl)

@@ -129,12 +129,21 @@ def train(writer, logger):
                            lr=args.lr)
     scheduler2 = get_scheduler(optimizer2, policy='step', decay_step=200)
 
-    print('loading traj model from checkpoint: %s' % args.pretrained_path_traj)
-    model_cp1 = torch.load(args.pretrained_path_traj)
-    traj_model.load_state_dict(model_cp1['model_dict'])
-    print('loading motion model from checkpoint: %s' % args.pretrained_path_motion)
-    model_cp2 = torch.load(args.pretrained_path_motion)
-    motion_model.load_state_dict(model_cp2['model_dict'])
+
+    #load pre-trained trajfill-VAE
+    if args.pretrained_path_traj and os.path.isfile(args.pretrained_path_traj):
+        print('loading traj model from checkpoint: %s' % args.pretrained_path_traj)
+        model_cp1 = torch.load(args.pretrained_path_traj)
+        traj_model.load_state_dict(model_cp1['model_dict'])
+    else:
+        print('No pre-trained TrajFill model provided. Training from scratch.')
+
+    if args.pretrained_path_motion and os.path.isfile(args.pretrained_path_motion):
+        print('loading motion model from checkpoint: %s' % args.pretrained_path_motion)
+        model_cp2 = torch.load(args.pretrained_path_motion)
+        motion_model.load_state_dict(model_cp2['model_dict'])
+    else:
+        print('No pre-trained LocalMotionFill model provided. Training from scratch.')
 
     bce_loss = nn.BCEWithLogitsLoss().to(device)
     mask_t_1 = [0, args.clip_fps*args.clip_seconds]

@@ -1,4 +1,5 @@
 import sys
+import math  # Added for sqrt
 
 sys.path.append('.')
 sys.path.append('..')
@@ -114,75 +115,49 @@ class MarkerNet(nn.Module):
         input_dim = 3 + self.obj_cond_feature  # Input features per marker (3 for x, y, z, plus object height if used)
         self.input_proj = nn.Linear(input_dim, self.d_model)  # Projects marker inputs to the embedding dimension
 
+
+        self.input_proj_decoder = nn.Linear(self.d_model + self.in_cond + self.obj_cond_feature, self.d_model)
+
         self.object_cond_proj = nn.Linear(self.in_cond, self.d_model)
-        self.cross_attn = nn.MultiheadAttention(embed_dim=self.d_model, num_heads=self.nhead)
-        
+
+        self.q_proj = nn.Linear(self.d_model, self.d_model)
+        self.k_proj = nn.Linear(self.d_model, self.d_model)
+        self.v_proj = nn.Linear(self.d_model, self.d_model)
+        # Define separate biases for left and right hands
+        self.left_hand_attention_bias = nn.Parameter(torch.tensor(1.0))  # Learnable left hand bias
+        self.right_hand_attention_bias = nn.Parameter(torch.tensor(1.0))  # Learnable right hand bias
+
 
         # Transformer encoder
-        encoder_layer = nn.TransformerEncoderLayer(d_model=self.d_model, nhead=self.nhead, dim_feedforward=self.dim_feedforward)
+        encoder_layer = nn.TransformerEncoderLayer(
+            d_model=self.d_model, nhead=self.nhead,
+            dim_feedforward=self.dim_feedforward, batch_first=True)
         self.transformer_encoder = nn.TransformerEncoder(encoder_layer, num_layers=self.num_layers)
 
-        # Fully connected layer after transformer
-        transformer_output_dim = self.d_model * self.n_markers  # Total dimension after flattening transformer output
-        self.fc_out = nn.Linear(transformer_output_dim, self.n_neurons)
+        # Decoder: Project latent vector to sequence embeddings
+        self.z_to_seq = nn.Linear(latentD, self.n_markers * self.d_model)
 
-        # Residual blocks
-        self.enc_rb1 = ResBlock(self.n_neurons, self.n_neurons)
-        self.enc_rb2 = ResBlock(self.n_neurons, self.n_neurons)
+        # Transformer decoder layers (using encoder layers for simplicity)
+        decoder_layer = nn.TransformerEncoderLayer(
+            d_model=self.d_model, nhead=self.nhead,
+            dim_feedforward=self.dim_feedforward, batch_first=True)
+        self.transformer_decoder_layers = nn.TransformerEncoder(decoder_layer, num_layers=self.num_layers)
 
-        # Decoder layers for marker positions and probabilities
-        self.dec_rb1 = ResBlock(latentD + in_cond, n_neurons)
-        self.dec_rb2_xyz = ResBlock(n_neurons + latentD + in_cond + self.obj_cond_feature, n_neurons)
-        self.dec_rb2_p = ResBlock(n_neurons + latentD + in_cond, n_neurons)
-
-        self.dec_output_xyz = nn.Linear(n_neurons, self.in_feature)  # Outputs predicted marker positions
-        self.dec_output_p = nn.Linear(n_neurons, self.n_markers)     # Outputs predicted probabilities for markers
+        # Output projection layers
+        self.output_proj_xyz = nn.Linear(self.d_model, 3)
+        self.output_proj_p = nn.Linear(self.d_model, 1)
         self.p_output = nn.Sigmoid()  # Activation function for probabilities
 
-    def create_fixed_part_embedding(self):
-        """
-        Create fixed part-based embeddings for each body part. 
-        Assign fixed vectors for each part (e.g., head, hands, legs).
-        """
-        part_embeddings = {
-            'head_and_neck': torch.tensor([1, 0, 0], dtype=torch.float32),
-            'trunk': torch.tensor([0, 1, 0], dtype=torch.float32),
-            'right_upper_limb': torch.tensor([0, 0, 1], dtype=torch.float32),
-            'left_upper_limb': torch.tensor([1, 1, 0], dtype=torch.float32),
-            'right_hand': torch.tensor([1, 0, 1], dtype=torch.float32),
-            'left_hand': torch.tensor([0, 1, 1], dtype=torch.float32),
-            'left_legs': torch.tensor([0.5, 0.5, 0], dtype=torch.float32),
-            'right_legs': torch.tensor([0.5, 0, 0.5], dtype=torch.float32)
-        }
-        return part_embeddings
+        # Residual blocks are removed since we're using transformer layers in the decoder
 
-    def get_part_embeddings(self, part_labels):
-        """
-        Assign fixed embeddings based on part labels.
-        part_labels: Tensor of shape (batch_size, n_markers) representing the part labels for each marker.
-        Returns a tensor of shape (batch_size, n_markers, 3).
-        """
-        batch_size, n_markers = part_labels.shape
-        part_embeds = torch.zeros((batch_size, n_markers, 3), dtype=torch.float32).to(part_labels.device)
-
-        # Apply the corresponding part embedding based on the part label
-        for part_name, embed in self.part_based_embedding.items():
-            part_index = int(part_name.split("_")[0])  
-            part_embeds[part_labels == part_index] = embed
-
-        return part_embeds
-
-
-
-    def enc(self, cond_object, markers, contacts_markers, transf_transl, return_attention=False):
+    def enc(self, cond_object, markers, contacts_markers, transf_transl, part_labels):
         _, _, _, _, _, object_cond = cond_object
 
         bs = markers.size(0)
-
         markers = markers.view(bs, self.n_markers, 3).float()
+        part_labels = part_labels.view(bs, self.n_markers)
 
         contacts_markers = contacts_markers.float()
-
         transf_transl = transf_transl.float()
 
         if self.obj_cond_feature == 1:
@@ -193,68 +168,84 @@ class MarkerNet(nn.Module):
         marker_embeds = self.input_proj(markers)  # Shape: (bs, n_markers, d_model)
         marker_embeds = self.pos_encoder(marker_embeds)
 
-        marker_embeds = marker_embeds.permute(1, 0, 2)  # Shape: (n_markers, bs, d_model)
         # Transformer Encoder
-        transformer_output = self.transformer_encoder(marker_embeds)
+        transformer_output = self.transformer_encoder(marker_embeds)  # Shape: (bs, n_markers, d_model)
 
         # Project object condition to embedding dimension
         object_cond_proj = self.object_cond_proj(object_cond)  # Shape: (bs, d_model)
+        object_cond_proj = object_cond_proj.unsqueeze(1)  # Shape: (bs, 1, d_model)
 
-        object_cond_proj = object_cond_proj.unsqueeze(0)  # Shape: (1, bs, d_model)
+        # Custom Cross-Attention with Hand Bias
+        query = self.q_proj(object_cond_proj)  # (bs, 1, d_model)
+        key = self.k_proj(transformer_output)    # (bs, n_markers, d_model)
+        value = self.v_proj(transformer_output)  # (bs, n_markers, d_model)
+
+        # Compute attention scores
+        attn_scores = torch.matmul(query, key.transpose(-2, -1)) / math.sqrt(self.d_model)  # (bs, 1, n_markers)
+
+        # Assuming hand labels are 5 for left hand and 6 for right hand
+        left_hand_labels = torch.tensor([5], device=part_labels.device)
+        right_hand_labels = torch.tensor([6], device=part_labels.device)
+
+        is_left_hand_marker = (part_labels.unsqueeze(-1) == left_hand_labels).any(dim=-1)  # (bs, n_markers)
+        is_right_hand_marker = (part_labels.unsqueeze(-1) == right_hand_labels).any(dim=-1)  # (bs, n_markers)
+
+        left_hand_mask = is_left_hand_marker.float().unsqueeze(1)  # (bs, 1, n_markers)
+        right_hand_mask = is_right_hand_marker.float().unsqueeze(1)  # (bs, 1, n_markers)
+
+        # Adjust attention scores with separate biases
+        adjusted_attn_scores = attn_scores + left_hand_mask * self.left_hand_attention_bias + right_hand_mask * self.right_hand_attention_bias
 
 
-        # Cross-Attention
-        attn_output, attn_weights = self.cross_attn(
-            query=transformer_output,  # (n_markers, bs, d_model)
-            key=object_cond_proj,      # (1, bs, d_model)
-            value=object_cond_proj     # (1, bs, d_model)
-        )
+        # Compute attention weights
+        attn_weights = F.softmax(adjusted_attn_scores, dim=-1)  # (bs, 1, n_markers)
 
-        attn_output = attn_output.permute(1, 0, 2).contiguous().view(bs, -1)  # Shape: (bs, n_markers * d_model)
+        # Compute attention output
+        attn_output = torch.matmul(attn_weights, value)  # (bs, 1, d_model)
 
-        X0 = attn_output
+        # Flatten attn_output
+        attn_output_flat = attn_output.view(bs, -1)  # (bs, d_model)
 
-        X = F.relu(self.fc_out(X0))
-
-        X = self.enc_rb1(X)
-
-        X = self.enc_rb2(X)
-
-        attn_weights = F.softmax(attn_weights, dim=-1)
-
-        if return_attention:
-            return X, attn_weights
+        # Pass through a fully connected layer or further processing
+        X = F.relu(attn_output_flat)
 
         return X
-
-
-
 
     def dec(self, Z, cond_object, transf_transl):
         # Extract object condition feature
         _, _, _, _, _, object_cond = cond_object
-        # Concatenate latent vector Z and object condition features
-        X0 = torch.cat([Z, object_cond], dim=1).float()
 
-        # Pass through first residual block
-        X = self.dec_rb1(X0, True)
+        bs = Z.size(0)
 
-        # Include object height in XYZ decoder (optional)
+        # Project Z to sequence embeddings
+        z_seq = self.z_to_seq(Z).view(bs, self.n_markers, self.d_model)  # Shape: (bs, n_markers, d_model)
+
+        object_cond_expanded = object_cond.unsqueeze(1).expand(-1, self.n_markers, -1)  # Shape: (bs, n_markers, object_cond_dim)
+
+        z_seq = torch.cat([z_seq, object_cond_expanded], dim=2)  # Shape: (bs, n_markers, d_model + object_cond_dim)
+
+
         if self.obj_cond_feature == 1:
-            object_height = transf_transl[:, -1, None]
-            X_xyz_input = torch.cat([X0, X, object_height], dim=1).float()
-        else:
-            X_xyz_input = torch.cat([X0, X], dim=1).float()
+            object_height = transf_transl[:, -1, None].unsqueeze(1).expand(-1, self.n_markers, -1)  # Shape: (bs, n_markers, 1)
+            z_seq = torch.cat([z_seq, object_height], dim=2)  # Now shape is (bs, n_markers, d_model + object_cond_dim + 1)
 
-        # Pass through residual blocks for position and probability predictions
-        X_xyz = self.dec_rb2_xyz(X_xyz_input, True)
-        X_p = self.dec_rb2_p(torch.cat([X0, X], dim=1).float(), True)
 
-        # Predict marker positions and probabilities
-        xyz_pred = self.dec_output_xyz(X_xyz)
-        p_pred = self.p_output(self.dec_output_p(X_p))
+        z_seq = self.input_proj_decoder(z_seq) # Shape: (bs, n_markers, d_model)
+        # Apply positional encoding
+        z_seq = self.pos_encoder(z_seq)
+
+        # Pass through transformer decoder layers
+        transformer_output = self.transformer_decoder_layers(z_seq)  # Shape: (bs, n_markers, d_model)
+
+        # Predict positions and probabilities
+        xyz_pred = self.output_proj_xyz(transformer_output)  # Shape: (bs, n_markers, 3)
+        p_pred = self.p_output(self.output_proj_p(transformer_output).squeeze(-1))  # Shape: (bs, n_markers)
+
+        # Flatten the xyz predictions to match the expected output shape
+        xyz_pred = xyz_pred.view(bs, -1)
 
         return xyz_pred, p_pred
+
 
 class ContactNet(nn.Module):
     def __init__(self, cfg, latentD=16, hc=64, object_feature=6, **kwargs):
@@ -340,15 +331,15 @@ class FullBodyGraspNet(nn.Module):
 
         self.pointnet = PointNetEncoder(hc=cfg.pointnet_hc, in_feature=cfg.obj_feature)
         # encoder fusion
-        self.enc_fusion = ResBlock(cfg.n_markers+self.cfg.pointnet_hc*8, cfg.n_neurons)
+        self.enc_fusion = ResBlock(self.marker_net.d_model + self.cfg.pointnet_hc * 8, cfg.n_neurons)
 
         self.enc_mu = nn.Linear(cfg.n_neurons, cfg.latentD)
         self.enc_var = nn.Linear(cfg.n_neurons, cfg.latentD)
 
 
-    def encode(self, object_cond, verts_object, feat_object, contacts_object, markers, contacts_markers, transf_transl):
+    def encode(self, object_cond, verts_object, feat_object, contacts_object, markers, contacts_markers, transf_transl, part_labels):
         # marker branch
-        marker_feat = self.marker_net.enc(object_cond, markers, contacts_markers, transf_transl)   # [B, n_neurons=1024]
+        marker_feat = self.marker_net.enc(object_cond, markers, contacts_markers, transf_transl, part_labels)   # [B, n_neurons=1024]
 
         # contact branch
         contact_feat = self.contact_net.enc(contacts_object, verts_object, feat_object)  # [B, hc*8]
@@ -371,10 +362,9 @@ class FullBodyGraspNet(nn.Module):
 
         return markers_xyz_pred.view(bs, -1, 3), markers_p_pred, contact_pred
 
-    def forward(self, verts_object, feat_object, contacts_object, markers, contacts_markers, transf_transl, **kwargs):
+    def forward(self, verts_object, feat_object, contacts_object, markers, contacts_markers, transf_transl, part_labels, **kwargs):
         object_cond = self.pointnet(l0_xyz=verts_object, l0_points=feat_object)
-
-        z = self.encode(object_cond, verts_object, feat_object, contacts_object, markers, contacts_markers, transf_transl)
+        z = self.encode(object_cond, verts_object, feat_object, contacts_object, markers, contacts_markers, transf_transl, part_labels)
         z_s = z.rsample()
 
         markers_xyz_pred, markers_p_pred, object_p_pred = self.decode(z_s, object_cond, verts_object, feat_object, transf_transl)

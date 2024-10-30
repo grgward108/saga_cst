@@ -14,82 +14,128 @@ from utils.Quaternions_torch import Quaternions_torch
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 
+import torch
+
 def point2point_signed(
-        x,
-        y,
-        x_normals=None,
-        y_normals=None,
-        return_vector=False,
+    x,
+    y,
+    x_normals=None,
+    y_normals=None,
+    return_vector=False,
+    transform_distances=False  # Add this flag to enable/disable the transformation
 ):
     """
-    signed distance between two pointclouds
+    Signed distance between two point clouds, with optional transformation.
 
     Args:
         x: FloatTensor of shape (N, P1, D) representing a batch of point clouds
-            with P1 points in each batch element, batch size N and feature
-            dimension D.
+            with P1 points in each batch element, batch size N, and feature dimension D.
         y: FloatTensor of shape (N, P2, D) representing a batch of point clouds
-            with P2 points in each batch element, batch size N and feature
-            dimension D.
+            with P2 points in each batch element, batch size N, and feature dimension D.
         x_normals: Optional FloatTensor of shape (N, P1, D).
         y_normals: Optional FloatTensor of shape (N, P2, D).
+        return_vector: If True, return the distance vectors in addition to signed distances.
+        transform_distances: If True, apply the transformation `exp(-5 * distance)`.
 
     Returns:
-
         - y2x_signed: Torch.Tensor
-            the sign distance from y to x
-        - y2x_signed: Torch.Tensor
-            the sign distance from y to x
-        - yidx_near: Torch.tensor
-            the indices of x vertices closest to y
-
+            The signed distance from each y point to its closest x point.
+        - x2y_signed: Torch.Tensor
+            The signed distance from each x point to its closest y point.
+        - yidx_near: Torch.Tensor
+            Indices of x vertices closest to each y point.
+        - xidx_near: Torch.Tensor
+            Indices of y vertices closest to each x point.
     """
 
-
     N, P1, D = x.shape
-    P2 = y.shape[1]
+    _, P2, _ = y.shape
 
     if y.shape[0] != N or y.shape[2] != D:
         raise ValueError("y does not have the correct shape.")
 
-    # ch_dist = chd.ChamferDistance()
-
-    # Instantiate the ChamferDistance class
+    # Instantiate Chamfer Distance
     chamfer_dist = chd.ChamferDistance()
 
-    # Call it with x and y
-    x_near, y_near, xidx_near, yidx_near = chamfer_dist(x, y)
+    # Compute nearest neighbors using Chamfer Distance
+    _, _, xidx_near, yidx_near = chamfer_dist(x, y)
 
+    # Gather nearest points based on indices to get coordinates
+    xidx_near_expanded = xidx_near.unsqueeze(-1).expand(-1, -1, D)
+    x_near = y.gather(1, xidx_near_expanded)  # Shape: (N, P1, D)
 
-    xidx_near_expanded = xidx_near.view(N, P1, 1).expand(N, P1, D).to(torch.long)
-    x_near = y.gather(1, xidx_near_expanded)
+    yidx_near_expanded = yidx_near.unsqueeze(-1).expand(-1, -1, D)
+    y_near = x.gather(1, yidx_near_expanded)  # Shape: (N, P2, D)
 
-    yidx_near_expanded = yidx_near.view(N, P2, 1).expand(N, P2, D).to(torch.long)
-    y_near = x.gather(1, yidx_near_expanded)
+    # Calculate distance vectors
+    x2y = x - x_near  # Vector from each marker point to its nearest object vertex
+    y2x = y - y_near  # Vector from each object vertex to its nearest marker point
 
-    x2y = x - x_near  # y point to x
-    y2x = y - y_near  # x point to y
+    # Calculate unsigned distances for each point to its nearest neighbor
+    x2y_distance = x2y.norm(dim=2)  # Shape: (N, P1)
+    y2x_distance = y2x.norm(dim=2)  # Shape: (N, P2)
 
+    # Compute signed distances if normals are provided
     if x_normals is not None:
         y_nn = x_normals.gather(1, yidx_near_expanded)
-        in_out = torch.bmm(y_nn.view(-1, 1, 3), y2x.view(-1, 3, 1)).view(N, -1).sign()
-        y2x_signed = y2x.norm(dim=2) * in_out
-
+        in_out = torch.bmm(y_nn.view(-1, 1, D), y2x.view(-1, D, 1)).view(N, -1).sign()
+        y2x_signed = y2x_distance * in_out
     else:
-        y2x_signed = y2x.norm(dim=2)
+        y2x_signed = y2x_distance
 
     if y_normals is not None:
         x_nn = y_normals.gather(1, xidx_near_expanded)
-        in_out_x = torch.bmm(x_nn.view(-1, 1, 3), x2y.view(-1, 3, 1)).view(N, -1).sign()
-        x2y_signed = x2y.norm(dim=2) * in_out_x
+        in_out_x = torch.bmm(x_nn.view(-1, 1, D), x2y.view(-1, D, 1)).view(N, -1).sign()
+        x2y_signed = x2y_distance * in_out_x
     else:
-        x2y_signed = x2y.norm(dim=2)
+        x2y_signed = x2y_distance
+
+    # Apply the transformation `exp(-5 * distance)` if `transform_distances` is True
+    if transform_distances:
+        y2x_signed = torch.exp(-5 * y2x_signed)
+        x2y_signed = torch.exp(-5 * x2y_signed)
 
     if not return_vector:
         return y2x_signed, x2y_signed, yidx_near, xidx_near
     else:
         return y2x_signed, x2y_signed, yidx_near, xidx_near, y2x, x2y
+    
 
+def point2point_signed_dummy(
+    x,
+    y,
+    x_normals=None,
+    y_normals=None,
+    return_vector=False,
+    transform_distances=False
+):
+    """
+    Dummy version of the signed distance between two point clouds.
+    Returns dummy data instead of actual distances for testing purposes.
+    """
+    N, P1, D = x.shape
+    _, P2, _ = y.shape
+
+    # Create dummy signed distances
+    y2x_signed = torch.rand(N, P2)  # Dummy distances for y-to-x
+    x2y_signed = torch.rand(N, P1)  # Dummy distances for x-to-y
+
+    # Optionally apply transformation `exp(-5 * distance)`
+    if transform_distances:
+        y2x_signed = torch.exp(-5 * y2x_signed)
+        x2y_signed = torch.exp(-5 * x2y_signed)
+
+    # Create dummy indices for nearest neighbors
+    yidx_near = torch.randint(0, P1, (N, P2))  # Dummy indices for y-to-x
+    xidx_near = torch.randint(0, P2, (N, P1))  # Dummy indices for x-to-y
+
+    if not return_vector:
+        return y2x_signed, x2y_signed, yidx_near, xidx_near
+    else:
+        # Dummy vectors for distance vectors (optional output)
+        y2x_vector = torch.rand(N, P2, D)
+        x2y_vector = torch.rand(N, P1, D)
+        return y2x_signed, x2y_signed, yidx_near, xidx_near, y2x_vector, x2y_vector
 
 
 
