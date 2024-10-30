@@ -429,39 +429,7 @@ class FittingOP:
                 if self.verbose and not (ii+1) % 50:
                     self.logger('[INFO][fitting][stage{:d}] iter={:d}, loss:{:s}, verts_info:{:s}'.format(ss,
                                             ii, losses_str, verts_str))
-                    wandb.log(loss_dict)
-                    wandb.log(vertices_info) 
-                                        
-
-                    # #### (optional) debug here
-                    # # import open3d as o3d 
-                    # import sys
-                    # object_pcd = o3d.geometry.PointCloud()
-                    # rhand_pcd = o3d.geometry.PointCloud()
-                    # object_pcd.points = o3d.utility.Vector3dVector(verts_object.squeeze().detach().cpu().numpy())
-                    # object_pcd.normals = o3d.utility.Vector3dVector(normal_object.squeeze().detach().cpu().numpy())
-                    # rhand_pcd.points = o3d.utility.Vector3dVector(rhand_verts_rec.squeeze().detach().cpu().numpy())
-                    # rhand_pcd.normals = o3d.utility.Vector3dVector(rh_normals.squeeze().detach().cpu().numpy())
-
-                    # # print(h2o_signed)
-                    # h_in = torch.where(h2o_signed<0)[1].cpu().numpy()
-                    # colors_rh = np.zeros((rhand_verts_rec.shape[1], 3))
-                    # colors_rh[h_in, 0] = 1
-                    # rhand_pcd.colors = o3d.utility.Vector3dVector(colors_rh)
-
-                    # # print(h2o_signed)
-                    # o_in = torch.where(o2h_signed<0)[1].cpu().numpy()
-                    # print(o_in)
-                    # colors_obj = np.zeros((2048, 3))
-                    # colors_obj[:, 1] = 1
-                    # colors_obj[o_in, 1] = 0
-                    # object_pcd.colors = o3d.utility.Vector3dVector(colors_obj)
-
-                    # # o3d.visualization.draw_geometries([rhand_pcd, object_pcd])
-                    # # o3d.visualization.draw_geometries([rhand_pcd])
-                    # o3d.visualization.draw_geometries([object_pcd])
-
-
+                                    
                 eval_grasp = loss
                 # eval_grasp = vertices_info['hand colli'] + vertices_info['obj colli']#-8*vertices_info['contact']
                 # contact_num = vertices_info['contact']
