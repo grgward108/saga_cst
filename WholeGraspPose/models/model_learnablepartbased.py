@@ -1,5 +1,5 @@
 import sys
-import math  # Added for sqrt
+# import math  # Removed redundant import
 
 sys.path.append('.')
 sys.path.append('..')
@@ -7,8 +7,7 @@ import numpy as np
 import torch
 from torch import nn
 from torch.nn import functional as F
-from WholeGraspPose.models.pointnet import (PointNetFeaturePropagation,
-                                            PointNetSetAbstraction)
+from WholeGraspPose.models.pointnet import PointNetFeaturePropagation, PointNetSetAbstraction
 
 
 class ResBlock(nn.Module):
@@ -99,9 +98,6 @@ class MarkerNet(nn.Module):
         self.q_proj = nn.Linear(self.d_model, self.d_model)
         self.k_proj = nn.Linear(self.d_model, self.d_model)
         self.v_proj = nn.Linear(self.d_model, self.d_model)
-        # Define separate biases for left and right hands
-        # self.left_hand_attention_bias = nn.Parameter(torch.tensor(1.0))  # Learnable left hand bias
-        self.right_hand_attention_bias = 0.9 # Learnable right hand bias
 
         # Learnable part embeddings
         self.num_parts = 9  # Labels 0 to 8
@@ -187,7 +183,7 @@ class MarkerNet(nn.Module):
 
         return X
 
-    def dec(self, Z, cond_object, transf_transl):
+    def dec(self, Z, cond_object, transf_transl, part_labels):
         # Extract object condition feature
         _, _, _, _, _, object_cond = cond_object
 
@@ -196,22 +192,38 @@ class MarkerNet(nn.Module):
         # Project Z to sequence embeddings
         z_seq = self.z_to_seq(Z).view(bs, self.n_markers, self.d_model)  # Shape: (bs, n_markers, d_model)
 
+        # Retrieve part embeddings
+        part_embeds = self.part_embedding(part_labels)  # Shape: (bs, n_markers, d_model)
+
+        # Add part embeddings to z_seq
+        z_seq = z_seq + part_embeds  # Shape: (bs, n_markers, d_model)
+
+        # Concatenate object condition features
         object_cond_expanded = object_cond.unsqueeze(1).expand(-1, self.n_markers, -1)  # Shape: (bs, n_markers, object_cond_dim)
-
         z_seq = torch.cat([z_seq, object_cond_expanded], dim=2)  # Shape: (bs, n_markers, d_model + object_cond_dim)
-
 
         if self.obj_cond_feature == 1:
             object_height = transf_transl[:, -1, None].unsqueeze(1).expand(-1, self.n_markers, -1)  # Shape: (bs, n_markers, 1)
             z_seq = torch.cat([z_seq, object_height], dim=2)  # Now shape is (bs, n_markers, d_model + object_cond_dim + 1)
 
-
+        # Project back to d_model if necessary
         z_seq = self.input_proj_decoder(z_seq.float())  # Shape: (bs, n_markers, d_model)
-        # Apply positional encoding
-        z_seq = self.pos_encoder(z_seq)
+
+        # (Optional) Apply non-linearity
+        # z_seq = F.relu(z_seq)
+
+        # Remove positional encoding
+        # z_seq = self.pos_encoder(z_seq)
+
+        # Prepare for transformer decoder layers
+        # Transpose to shape (n_markers, bs, d_model) if needed
+        z_seq = z_seq.permute(1, 0, 2)
 
         # Pass through transformer decoder layers
-        transformer_output = self.transformer_decoder_layers(z_seq)  # Shape: (bs, n_markers, d_model)
+        transformer_output = self.transformer_decoder_layers(z_seq)  # Shape: (n_markers, bs, d_model)
+
+        # Transpose back
+        transformer_output = transformer_output.permute(1, 0, 2)  # Shape: (bs, n_markers, d_model)
 
         # Predict positions and probabilities
         xyz_pred = self.output_proj_xyz(transformer_output)  # Shape: (bs, n_markers, 3)
@@ -221,6 +233,7 @@ class MarkerNet(nn.Module):
         xyz_pred = xyz_pred.view(bs, -1)
 
         return xyz_pred, p_pred
+
 
 class ContactNet(nn.Module):
     def __init__(self, cfg, latentD=16, hc=64, object_feature=6, **kwargs):
@@ -326,11 +339,11 @@ class FullBodyGraspNet(nn.Module):
         return torch.distributions.normal.Normal(self.enc_mu(X), F.softplus(self.enc_var(X)))
 
 
-    def decode(self, Z, object_cond, verts_object, feat_object, transf_transl):
+    def decode(self, Z, object_cond, verts_object, feat_object, transf_transl, part_labels):
 
         bs = Z.shape[0]
         # marker_branch
-        markers_xyz_pred, markers_p_pred = self.marker_net.dec(Z, object_cond, transf_transl)
+        markers_xyz_pred, markers_p_pred = self.marker_net.dec(Z, object_cond, transf_transl, part_labels)
 
         # contact branch
         contact_pred = self.contact_net.dec(Z, object_cond, verts_object, feat_object)
@@ -342,14 +355,14 @@ class FullBodyGraspNet(nn.Module):
         z = self.encode(object_cond, verts_object, feat_object, contacts_object, markers, contacts_markers, transf_transl, part_labels, marker_object_distance)
         z_s = z.rsample()
 
-        markers_xyz_pred, markers_p_pred, object_p_pred = self.decode(z_s, object_cond, verts_object, feat_object, transf_transl)
+        markers_xyz_pred, markers_p_pred, object_p_pred = self.decode(z_s, object_cond, verts_object, feat_object, transf_transl, part_labels)
 
         results = {'markers': markers_xyz_pred, 'contacts_markers': markers_p_pred, 'contacts_object': object_p_pred, 'object_code': object_cond[-1], 'mean': z.mean, 'std': z.scale}
 
         return results
 
 
-    def sample(self, verts_object, feat_object, transf_transl, seed=None):
+    def sample(self, verts_object, feat_object, transf_transl, part_labels, seed=None):
         bs = verts_object.shape[0]
         if seed is not None:
             np.random.seed(seed)
@@ -362,4 +375,4 @@ class FullBodyGraspNet(nn.Module):
 
         object_cond = self.pointnet(l0_xyz=verts_object, l0_points=feat_object)
 
-        return self.decode(Zgen, object_cond, verts_object, feat_object, transf_transl)
+        return self.decode(Zgen, object_cond, verts_object, feat_object, transf_transl, part_labels)
