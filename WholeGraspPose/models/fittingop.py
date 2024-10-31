@@ -176,7 +176,7 @@ class FittingOP:
         #################################################
         # regularization
         loss_vpose_reg = 0.0001*torch.mean(self.vpose_rec**2)
-        loss_hand_pose_reg = 0.0005*torch.mean(self.hand_pose**2)
+        loss_hand_pose_reg = 0.005*torch.mean(self.hand_pose**2)
         loss_eye_pose_reg = 0.0001*torch.mean(self.eye_pose**2)
 
         #################################################
@@ -243,15 +243,6 @@ class FittingOP:
 
         # Compute average interpenetration depth in cm
         num_interpenetrating_vertices = torch.sum(h2o_signed < 0).item()
-
-        average_interpenetration_depth_cm = interpenetration_depth_cm / num_interpenetrating_vertices if num_interpenetrating_vertices > 0 else 0.0
-        loss_dict['average_interpenetration_depth_cm'] = average_interpenetration_depth_cm
-
-        # Ensure average_interpenetration_depth_cm is a float
-        if isinstance(average_interpenetration_depth_cm, torch.Tensor):
-            average_interpenetration_depth_cm = average_interpenetration_depth_cm.detach().cpu().item()
-        loss_dict['average_interpenetration_depth_cm'] = average_interpenetration_depth_cm
-
 
         vertices_info = {}
         vertices_info['hand colli'] = torch.where(v_dist_neg==True)[0].size()[0]
@@ -359,14 +350,6 @@ class FittingOP:
         interpenetration_depth_cm = interpenetration_depth * 100  # Convert meters to centimeters
         loss_dict['interpenetration_depth_cm'] = interpenetration_depth_cm.item()
 
-        # Compute average interpenetration depth in cm
-        num_interpenetrating_vertices = torch.sum(h2o_signed < 0).item()
-        if num_interpenetrating_vertices > 0:
-            average_interpenetration_depth_cm = interpenetration_depth_cm / num_interpenetrating_vertices
-        else:
-            average_interpenetration_depth_cm = 0.0
-        loss_dict['average_interpenetration_depth_cm'] = average_interpenetration_depth_cm
-
         vertices_info = {}
         vertices_info['hand colli'] = torch.where(v_dist_neg==True)[0].size()[0]
         vertices_info['obj colli'] = torch.where(w_dist_neg==True)[0].size()[0]
@@ -412,7 +395,6 @@ class FittingOP:
         save_loss['object contact'] = []
         save_loss['prior contact'] = []
         save_loss['interpenetration_depth_cm'] = []
-        save_loss['average_interpenetration_depth_cm'] = []
         save_loss['contact_ratio'] = []
 
         start = time.time()
