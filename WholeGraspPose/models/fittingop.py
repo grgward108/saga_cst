@@ -136,6 +136,18 @@ class FittingOP:
         self.eye_pose.data = torch.nn.Parameter(torch.zeros(self.batch_size,6).to(self.device))
 
     def calc_loss_contact_map(self, body_markers, verts_object, normal_object, contacts_object, contacts_markers, gender, betas, stage, alpha):
+        """
+        Calculate the loss for the contact map between body markers and object vertices.
+
+        Parameters:
+        body_markers (torch.Tensor): The body markers.
+        verts_object (torch.Tensor): The vertices of the object.
+        normal_object (torch.Tensor): The normals of the object vertices.
+        contacts_object (torch.Tensor): The contact points on the object.
+        contacts_markers (torch.Tensor): The contact points on the markers.
+        stage (int): The current stage of the fitting process.
+
+        """
         body_param = {}
         body_param['transl'] = self.transl_rec
         body_param['global_orient'] = RotConverter.rotmat2aa(RotConverter.cont2rotmat(self.glo_rot_rec))
@@ -146,6 +158,10 @@ class FittingOP:
         body_param['right_hand_pose'] = self.hand_pose[:,self.hand_ncomps:]
         body_param['leye_pose'] = self.eye_pose[:,:3]
         body_param['reye_pose'] = self.eye_pose[:,3:]
+
+        # Extract left and right hand poses
+        left_hand_pose = self.hand_pose[:, :self.hand_ncomps]
+        right_hand_pose = self.hand_pose[:, self.hand_ncomps:]
 
         output = self.bm(return_verts=True, **body_param)
         verts_full = output.vertices
@@ -175,8 +191,15 @@ class FittingOP:
 
         #################################################
         # regularization
+        # Regularization weights
+        left_hand_reg_weight = 0.005   # Higher weight for left hand
+        right_hand_reg_weight = 0.0001  # Lower weight for right hand
+
+        loss_left_hand_pose_reg = left_hand_reg_weight * torch.mean(left_hand_pose ** 2)
+        loss_right_hand_pose_reg = right_hand_reg_weight * torch.mean(right_hand_pose ** 2)
+
         loss_vpose_reg = 0.0001*torch.mean(self.vpose_rec**2)
-        loss_hand_pose_reg = 0.001*torch.mean(self.hand_pose**2)
+        loss_hand_pose_reg = loss_left_hand_pose_reg + loss_right_hand_pose_reg
         loss_eye_pose_reg = 0.0001*torch.mean(self.eye_pose**2)
 
         #################################################
@@ -244,20 +267,25 @@ class FittingOP:
         # Compute average interpenetration depth in cm
         num_interpenetrating_vertices = torch.sum(h2o_signed < 0).item()
 
-        vertices_info = {}
-        vertices_info['hand colli'] = torch.where(v_dist_neg==True)[0].size()[0]
-        vertices_info['obj colli'] = torch.where(w_dist_neg==True)[0].size()[0]
-        vertices_info['contact'] = torch.where((h2o_signed < 0.001) * (h2o_signed > -0.001)==True)[0].size()[0]
-        vertices_info['hand markers colli'] = torch.where(v_dist_marker_neg==True)[0].size()[0]
-        # Add contact ratio
-        total_hand_vertices = h2o_signed.size(1)
-        contact_ratio = vertices_info['contact'] / total_hand_vertices
-        vertices_info['contact_ratio'] = float(contact_ratio)
+        vertices_info = {
+            'hand colli': torch.where(v_dist_neg==True)[0].size()[0],
+            'obj colli': torch.where(w_dist_neg==True)[0].size()[0],
+            'contact': torch.where((h2o_signed < 0.001) * (h2o_signed > -0.001)==True)[0].size()[0],
+            'hand markers colli': torch.where(v_dist_marker_neg==True)[0].size()[0],
+            'contact_ratio': float(torch.where((h2o_signed < 0.001) * (h2o_signed > -0.001)==True)[0].size()[0] / h2o_signed.size(1))
+        }
 
-
-        return loss, loss_dict, body_markers_rec, body_param, vertices_info, rhand_verts_rec, rh_normals, h2o_signed, o2h_signed
-
-
+        return (
+            loss, 
+            loss_dict, 
+            body_markers_rec, 
+            body_param, 
+            vertices_info, 
+            rhand_verts_rec, 
+            rh_normals, 
+            h2o_signed, 
+            o2h_signed
+        )
     def calc_loss(self, body_markers, verts_object, normal_object, gender, betas, stage, alpha):
         body_param = {}
         body_param['transl'] = self.transl_rec

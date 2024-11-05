@@ -36,6 +36,10 @@ def extract_and_save_interpenetration_depth(log_file_path, save_csv_path):
         # Convert the data to a DataFrame with two columns
         df = pd.DataFrame(data, columns=['interpenetration_depth_cm', 'verts_info_contact'])
 
+        # Calculate the average of each column and append as a new row
+        averages = df.mean().to_dict()
+        df = df.append(averages, ignore_index=True)
+
         # Save to a CSV file
         df.to_csv(save_csv_path, index=False)
         print(f"CSV file saved at {save_csv_path}")
@@ -44,4 +48,3 @@ def extract_and_save_interpenetration_depth(log_file_path, save_csv_path):
         print(f"Error: The file '{log_file_path}' was not found.")
     except Exception as e:
         print(f"An error occurred: {e}")
-
