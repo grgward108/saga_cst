@@ -176,7 +176,7 @@ class FittingOP:
         #################################################
         # regularization
         loss_vpose_reg = 0.0001*torch.mean(self.vpose_rec**2)
-        loss_hand_pose_reg = 0.005*torch.mean(self.hand_pose**2)
+        loss_hand_pose_reg = 0.001*torch.mean(self.hand_pose**2)
         loss_eye_pose_reg = 0.0001*torch.mean(self.eye_pose**2)
 
         #################################################
