@@ -36,9 +36,11 @@ def extract_and_save_interpenetration_depth(log_file_path, save_csv_path):
         # Convert the data to a DataFrame with two columns
         df = pd.DataFrame(data, columns=['interpenetration_depth_cm', 'verts_info_contact'])
 
-        # Calculate the average of each column and append as a new row
-        averages = df.mean().to_dict()
-        df = df.append(averages, ignore_index=True)
+        # Calculate the average of each column
+        averages = pd.DataFrame([df.mean()], columns=df.columns)
+
+        # Concatenate the original DataFrame with the averages DataFrame
+        df = pd.concat([df, averages], ignore_index=True)
 
         # Save to a CSV file
         df.to_csv(save_csv_path, index=False)
