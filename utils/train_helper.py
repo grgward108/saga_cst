@@ -136,6 +136,92 @@ def point2point_signed_dummy(
         y2x_vector = torch.rand(N, P2, D)
         x2y_vector = torch.rand(N, P1, D)
         return y2x_signed, x2y_signed, yidx_near, xidx_near, y2x_vector, x2y_vector
+    
+
+def point2point_signed_singular(
+    x,
+    y,
+    x_normals=None,
+    y_normals=None,
+    return_vector=False,
+    transform_distances=False  # Add this flag to enable/disable the transformation
+):
+    """
+    Signed distance between two point clouds, with optional transformation.
+
+    Args:
+        x: FloatTensor of shape (P1, D) representing a point cloud with P1 points and feature dimension D.
+        y: FloatTensor of shape (P2, D) representing a point cloud with P2 points and feature dimension D.
+        x_normals: Optional FloatTensor of shape (P1, D).
+        y_normals: Optional FloatTensor of shape (P2, D).
+        return_vector: If True, return the distance vectors in addition to signed distances.
+        transform_distances: If True, apply the transformation `exp(-5 * distance)`.
+
+    Returns:
+        - y2x_signed: Torch.Tensor
+            The signed distance from each y point to its closest x point.
+        - x2y_signed: Torch.Tensor
+            The signed distance from each x point to its closest y point.
+        - yidx_near: Torch.Tensor
+            Indices of x vertices closest to each y point.
+        - xidx_near: Torch.Tensor
+            Indices of y vertices closest to each x point.
+    """
+    P1, D = x.shape
+    P2, _ = y.shape
+
+    # Instantiate KDTree
+    from scipy.spatial import cKDTree
+
+    # Build KDTree for x
+    x_tree = cKDTree(x.cpu().numpy())
+
+    # For each point in y, find the nearest point in x
+    distances_y2x, yidx_near = x_tree.query(y.cpu().numpy())
+    yidx_near = torch.from_numpy(yidx_near).to(x.device)
+    distances_y2x = torch.from_numpy(distances_y2x).to(x.device)
+
+    # Similarly for x to y
+    y_tree = cKDTree(y.cpu().numpy())
+    distances_x2y, xidx_near = y_tree.query(x.cpu().numpy())
+    xidx_near = torch.from_numpy(xidx_near).to(x.device)
+    distances_x2y = torch.from_numpy(distances_x2y).to(x.device)
+
+    # Gather nearest points
+    x_near = y[xidx_near, :]  # Shape: (P1, D)
+    y_near = x[yidx_near, :]  # Shape: (P2, D)
+
+    # Calculate distance vectors
+    x2y = x - x_near  # Vector from each x point to its nearest y point
+    y2x = y - y_near  # Vector from each y point to its nearest x point
+
+    # Calculate unsigned distances
+    x2y_distance = x2y.norm(dim=1)  # Shape: (P1,)
+    y2x_distance = y2x.norm(dim=1)  # Shape: (P2,)
+
+    # Compute signed distances if normals are provided
+    if x_normals is not None and y_normals is not None:
+        y_nn = x_normals[yidx_near, :]
+        in_out = torch.bmm(y_nn.view(-1, 1, D), y2x.view(-1, D, 1)).view(-1).sign()
+        y2x_signed = y2x_distance * in_out
+
+        x_nn = y_normals[xidx_near, :]
+        in_out_x = torch.bmm(x_nn.view(-1, 1, D), x2y.view(-1, D, 1)).view(-1).sign()
+        x2y_signed = x2y_distance * in_out_x
+    else:
+        y2x_signed = y2x_distance
+        x2y_signed = x2y_distance
+
+    # Apply the transformation `exp(-5 * distance)` if `transform_distances` is True
+    if transform_distances:
+        y2x_signed = torch.exp(-5 * y2x_signed)
+        x2y_signed = torch.exp(-5 * x2y_signed)
+
+    if not return_vector:
+        return y2x_signed, x2y_signed, yidx_near, xidx_near
+    else:
+        return y2x_signed, x2y_signed, yidx_near, xidx_near, y2x, x2y
+
 
 
 
