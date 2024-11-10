@@ -288,8 +288,8 @@ class Trainer:
         loss_marker_rec = self.LossL1(markers.view(markers.size(0), -1), markers_gt.view(markers.size(0), -1))
         
         hand_mask = torch.ones((143*3)).cuda()
-        hand_mask[64*3:79*3] = 3
-        hand_mask[-22*3:] = 3
+        hand_mask[49*3:79*3] = 3
+        hand_mask[-44*3:] = 3
         loss_marker_rec = torch.einsum('ij,j->ij', loss_marker_rec, hand_mask)
 
         loss_marker_rec = weight_rec * marker_weight * torch.mean(torch.sum(loss_marker_rec, dim=1))
