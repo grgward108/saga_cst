@@ -270,9 +270,9 @@ class FittingOP:
         vertices_info = {
             'hand colli': torch.where(v_dist_neg==True)[0].size()[0],
             'obj colli': torch.where(w_dist_neg==True)[0].size()[0],
-            'contact': torch.where((h2o_signed < 0.001) * (h2o_signed > -0.001)==True)[0].size()[0],
+            'contact': torch.where((h2o_signed < 0.003) * (h2o_signed > -0.003)==True)[0].size()[0],
             'hand markers colli': torch.where(v_dist_marker_neg==True)[0].size()[0],
-            'contact_ratio': float(torch.where((h2o_signed < 0.001) * (h2o_signed > -0.001)==True)[0].size()[0] / h2o_signed.size(1))
+            'contact_ratio': float(torch.where((h2o_signed < 0.003) * (h2o_signed > -0.003)==True)[0].size()[0] / h2o_signed.size(1))
         }
 
         return (
