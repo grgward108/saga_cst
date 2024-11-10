@@ -136,6 +136,18 @@ class FittingOP:
         self.eye_pose.data = torch.nn.Parameter(torch.zeros(self.batch_size,6).to(self.device))
 
     def calc_loss_contact_map(self, body_markers, verts_object, normal_object, contacts_object, contacts_markers, gender, betas, stage, alpha):
+        """
+        Calculate the loss for the contact map between body markers and object vertices.
+
+        Parameters:
+        body_markers (torch.Tensor): The body markers.
+        verts_object (torch.Tensor): The vertices of the object.
+        normal_object (torch.Tensor): The normals of the object vertices.
+        contacts_object (torch.Tensor): The contact points on the object.
+        contacts_markers (torch.Tensor): The contact points on the markers.
+        stage (int): The current stage of the fitting process.
+
+        """
         body_param = {}
         body_param['transl'] = self.transl_rec
         body_param['global_orient'] = RotConverter.rotmat2aa(RotConverter.cont2rotmat(self.glo_rot_rec))
@@ -146,6 +158,10 @@ class FittingOP:
         body_param['right_hand_pose'] = self.hand_pose[:,self.hand_ncomps:]
         body_param['leye_pose'] = self.eye_pose[:,:3]
         body_param['reye_pose'] = self.eye_pose[:,3:]
+
+        # Extract left and right hand poses
+        left_hand_pose = self.hand_pose[:, :self.hand_ncomps]
+        right_hand_pose = self.hand_pose[:, self.hand_ncomps:]
 
         output = self.bm(return_verts=True, **body_param)
         verts_full = output.vertices
@@ -175,8 +191,15 @@ class FittingOP:
 
         #################################################
         # regularization
+        # Regularization weights
+        left_hand_reg_weight = 0.005   # Higher weight for left hand
+        right_hand_reg_weight = 0.0001  # Lower weight for right hand
+
+        loss_left_hand_pose_reg = left_hand_reg_weight * torch.mean(left_hand_pose ** 2)
+        loss_right_hand_pose_reg = right_hand_reg_weight * torch.mean(right_hand_pose ** 2)
+
         loss_vpose_reg = 0.0001*torch.mean(self.vpose_rec**2)
-        loss_hand_pose_reg = 0.0005*torch.mean(self.hand_pose**2)
+        loss_hand_pose_reg = loss_left_hand_pose_reg + loss_right_hand_pose_reg
         loss_eye_pose_reg = 0.0001*torch.mean(self.eye_pose**2)
 
         #################################################
@@ -244,29 +267,25 @@ class FittingOP:
         # Compute average interpenetration depth in cm
         num_interpenetrating_vertices = torch.sum(h2o_signed < 0).item()
 
-        average_interpenetration_depth_cm = interpenetration_depth_cm / num_interpenetrating_vertices if num_interpenetrating_vertices > 0 else 0.0
-        loss_dict['average_interpenetration_depth_cm'] = average_interpenetration_depth_cm
+        vertices_info = {
+            'hand colli': torch.where(v_dist_neg==True)[0].size()[0],
+            'obj colli': torch.where(w_dist_neg==True)[0].size()[0],
+            'contact': torch.where((h2o_signed < 0.003) * (h2o_signed > -0.003)==True)[0].size()[0],
+            'hand markers colli': torch.where(v_dist_marker_neg==True)[0].size()[0],
+            'contact_ratio': float(torch.where((h2o_signed < 0.003) * (h2o_signed > -0.003)==True)[0].size()[0] / h2o_signed.size(1))
+        }
 
-        # Ensure average_interpenetration_depth_cm is a float
-        if isinstance(average_interpenetration_depth_cm, torch.Tensor):
-            average_interpenetration_depth_cm = average_interpenetration_depth_cm.detach().cpu().item()
-        loss_dict['average_interpenetration_depth_cm'] = average_interpenetration_depth_cm
-
-
-        vertices_info = {}
-        vertices_info['hand colli'] = torch.where(v_dist_neg==True)[0].size()[0]
-        vertices_info['obj colli'] = torch.where(w_dist_neg==True)[0].size()[0]
-        vertices_info['contact'] = torch.where((h2o_signed < 0.001) * (h2o_signed > -0.001)==True)[0].size()[0]
-        vertices_info['hand markers colli'] = torch.where(v_dist_marker_neg==True)[0].size()[0]
-        # Add contact ratio
-        total_hand_vertices = h2o_signed.size(1)
-        contact_ratio = vertices_info['contact'] / total_hand_vertices
-        vertices_info['contact_ratio'] = float(contact_ratio)
-
-
-        return loss, loss_dict, body_markers_rec, body_param, vertices_info, rhand_verts_rec, rh_normals, h2o_signed, o2h_signed
-
-
+        return (
+            loss, 
+            loss_dict, 
+            body_markers_rec, 
+            body_param, 
+            vertices_info, 
+            rhand_verts_rec, 
+            rh_normals, 
+            h2o_signed, 
+            o2h_signed
+        )
     def calc_loss(self, body_markers, verts_object, normal_object, gender, betas, stage, alpha):
         body_param = {}
         body_param['transl'] = self.transl_rec
@@ -359,14 +378,6 @@ class FittingOP:
         interpenetration_depth_cm = interpenetration_depth * 100  # Convert meters to centimeters
         loss_dict['interpenetration_depth_cm'] = interpenetration_depth_cm.item()
 
-        # Compute average interpenetration depth in cm
-        num_interpenetrating_vertices = torch.sum(h2o_signed < 0).item()
-        if num_interpenetrating_vertices > 0:
-            average_interpenetration_depth_cm = interpenetration_depth_cm / num_interpenetrating_vertices
-        else:
-            average_interpenetration_depth_cm = 0.0
-        loss_dict['average_interpenetration_depth_cm'] = average_interpenetration_depth_cm
-
         vertices_info = {}
         vertices_info['hand colli'] = torch.where(v_dist_neg==True)[0].size()[0]
         vertices_info['obj colli'] = torch.where(w_dist_neg==True)[0].size()[0]
@@ -412,7 +423,6 @@ class FittingOP:
         save_loss['object contact'] = []
         save_loss['prior contact'] = []
         save_loss['interpenetration_depth_cm'] = []
-        save_loss['average_interpenetration_depth_cm'] = []
         save_loss['contact_ratio'] = []
 
         start = time.time()
@@ -429,39 +439,7 @@ class FittingOP:
                 if self.verbose and not (ii+1) % 50:
                     self.logger('[INFO][fitting][stage{:d}] iter={:d}, loss:{:s}, verts_info:{:s}'.format(ss,
                                             ii, losses_str, verts_str))
-                    wandb.log(loss_dict)
-                    wandb.log(vertices_info) 
-                                        
-
-                    # #### (optional) debug here
-                    # # import open3d as o3d 
-                    # import sys
-                    # object_pcd = o3d.geometry.PointCloud()
-                    # rhand_pcd = o3d.geometry.PointCloud()
-                    # object_pcd.points = o3d.utility.Vector3dVector(verts_object.squeeze().detach().cpu().numpy())
-                    # object_pcd.normals = o3d.utility.Vector3dVector(normal_object.squeeze().detach().cpu().numpy())
-                    # rhand_pcd.points = o3d.utility.Vector3dVector(rhand_verts_rec.squeeze().detach().cpu().numpy())
-                    # rhand_pcd.normals = o3d.utility.Vector3dVector(rh_normals.squeeze().detach().cpu().numpy())
-
-                    # # print(h2o_signed)
-                    # h_in = torch.where(h2o_signed<0)[1].cpu().numpy()
-                    # colors_rh = np.zeros((rhand_verts_rec.shape[1], 3))
-                    # colors_rh[h_in, 0] = 1
-                    # rhand_pcd.colors = o3d.utility.Vector3dVector(colors_rh)
-
-                    # # print(h2o_signed)
-                    # o_in = torch.where(o2h_signed<0)[1].cpu().numpy()
-                    # print(o_in)
-                    # colors_obj = np.zeros((2048, 3))
-                    # colors_obj[:, 1] = 1
-                    # colors_obj[o_in, 1] = 0
-                    # object_pcd.colors = o3d.utility.Vector3dVector(colors_obj)
-
-                    # # o3d.visualization.draw_geometries([rhand_pcd, object_pcd])
-                    # # o3d.visualization.draw_geometries([rhand_pcd])
-                    # o3d.visualization.draw_geometries([object_pcd])
-
-
+                                    
                 eval_grasp = loss
                 # eval_grasp = vertices_info['hand colli'] + vertices_info['obj colli']#-8*vertices_info['contact']
                 # contact_num = vertices_info['contact']
