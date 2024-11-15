@@ -57,6 +57,28 @@ class GRAB_DataLoader(data.Dataset):
                 else:
                     self.markers_ids += list(marker['indices'].values())
 
+        self.segmentation = {
+            1: [2819, 3076, 1795, 2311, 1043, 919, 8985, 1696, 1703, 9002, 8757, 2383, 2898, 3035, 2148, 9066, 8947, 2041, 2813],
+            2: [4391, 4297, 5615, 5944, 5532, 5533, 5678, 7145],
+            3: [7179, 7028, 7115, 7251, 7274, 7293, 6778, 7036],
+            4: [4509, 4245, 4379, 4515, 4538, 4557, 4039, 4258],
+            5: [8001, 7781, 7750, 7978, 7756, 7884, 7500, 7419, 7984, 7633, 7602, 7667, 7860, 8082, 7351, 7611, 7867, 7423, 7357, 7396, 7443, 7446, 7536, 7589, 7618, 7625, 7692, 7706, 7730, 7748, 7789, 7847, 7858, 7924, 7931, 7976, 8039, 8050, 8087, 8122],
+            6: [4897, 5250, 4931, 5124, 5346, 4615, 5321, 4875, 5131, 4683, 4686, 4748, 5268, 5045, 5014, 5242, 5020, 5149, 4628, 4641, 4660, 4690, 4691, 4710, 4750, 4885, 4957, 4970, 5001, 5012, 5082, 5111, 5179, 5193, 5229, 5296, 5306, 5315, 5353, 5387],
+            7: [5857, 5893, 5899, 3479, 3781, 3638, 3705, 5761, 8852, 5726],
+            8: [8551, 8587, 8593, 6352, 6539, 6401, 6466, 8455, 8634, 8421],
+        }
+
+    def map_markers_to_parts(self, markers_ids):
+        """
+        Map marker indices to part labels based on segmentation.
+        """
+        part_labels = np.zeros(len(markers_ids), dtype=int)
+        for part, indices in self.segmentation.items():
+            for marker_id in indices:
+                if marker_id in markers_ids:
+                    part_labels[markers_ids.index(marker_id)] = part
+        return part_labels
+
     def divide_clip(self, dataset_name='GraspMotion', data_dir=None):
         npz_fnames = sorted(glob.glob(os.path.join(data_dir, dataset_name) + '/*.npz'))
         for npz_fname in npz_fnames:
@@ -100,10 +122,10 @@ class GRAB_DataLoader(data.Dataset):
 
     def create_body_hand_repr(self, smplx_model_path=None):
         """
-        Generate normalized marker positions for body and hand.
+        Generate normalized marker positions and part labels for body and hand.
         """
         self.clip_img_list = []
-        self.traj_gt_list = []
+        self.part_labels_list = []  # To store part labels for each sample
 
         for i in tqdm(range(self.n_samples)):
             body_param_ = self.data_dict_list[i]['body']
@@ -117,27 +139,34 @@ class GRAB_DataLoader(data.Dataset):
             markers_std = markers_np.std(axis=(0, 1), keepdims=True)
             normalized_markers = (markers_np - markers_mean) / (markers_std + 1e-8)
 
-            # Store normalized data
+            # Map markers to part labels
+            part_labels = self.map_markers_to_parts(self.markers_ids)
+
+            # Store normalized data and part labels
             self.clip_img_list.append(normalized_markers)
+            self.part_labels_list.append(part_labels)
 
         self.clip_img_list = np.asarray(self.clip_img_list)
+        self.part_labels_list = np.asarray(self.part_labels_list)
+
 
     def __len__(self):
         return self.n_samples
 
     def __getitem__(self, index):
-        """
-        Return marker data without channels.
-        """
-        clip_img = self.clip_img_list[index]  # Shape: [sequence_length, features]
-        clip_img = torch.from_numpy(clip_img).float().permute(1, 0)  # Reshape to [features, sequence_length]
+        clip_img = self.clip_img_list[index]  # [seq_len, n_markers, marker_dim]
+        part_labels = self.part_labels_list[index]  # [n_markers]
+
+        # Convert to tensor
+        clip_img = torch.from_numpy(clip_img).float()  # [seq_len, n_markers, marker_dim]
+        part_labels = torch.from_numpy(part_labels).long()  # [n_markers]
 
         # Apply random masking
-        mask = torch.rand(clip_img.shape) < self.mask_prob
+        mask = torch.rand(clip_img.shape[:2]) < self.mask_prob  # [seq_len, n_markers]
         masked_clip_img = clip_img.clone()
-        masked_clip_img[mask] = 0
+        masked_clip_img[mask] = 0  # Zero out masked values
 
-        return masked_clip_img, clip_img
+        return masked_clip_img, clip_img, part_labels
 
 
 
