@@ -31,13 +31,14 @@ device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 def train():
     # Dataset setup
     train_dataset = GRAB_DataLoader(clip_seconds=2, clip_fps=30, split='train', normalize=True, markers_type='f0_p5' )
-    train_dataset.read_data(['s1', 's2'], args.dataset_dir)
-    train_dataset.create_body_hand_repr()
+    train_dataset.read_data(['s1'], args.dataset_dir)
+    train_dataset.create_body_hand_repr(smplx_model_path='body_utils/body_models')
+
     train_loader = DataLoader(train_dataset, batch_size=args.batch_size, shuffle=True, num_workers=args.num_workers)
 
     test_dataset = GRAB_DataLoader(clip_seconds=2, clip_fps=30, split='test', normalize=True, markers_type='f0_p5')
     test_dataset.read_data(['s9'], args.dataset_dir)
-    test_dataset.create_body_hand_repr()
+    test_dataset.create_body_hand_repr(smplx_model_path='body_utils/body_models')
     test_loader = DataLoader(test_dataset, batch_size=args.batch_size, shuffle=False, num_workers=args.num_workers)
 
     n_markers = len(train_dataset.markers_ids)
@@ -59,10 +60,10 @@ def train():
         model.train()
         total_loss = 0
         for step, (masked_markers, ground_truth, part_labels) in enumerate(train_loader):
-            masked_markers, ground_truth = masked_markers.to(device), ground_truth.to(device)
-            part_labels = part_labels.to(device)  # Part labels are included but not used yet
-
-
+            # masked_markers: [batch_size, n_markers, seq_len, marker_dim]
+            masked_markers = masked_markers.permute(0, 2, 1, 3).to(device)  # [batch_size, seq_len, n_markers, marker_dim]
+            ground_truth = ground_truth.permute(0, 2, 1, 3).to(device)  # Same as above
+            part_labels = part_labels.to(device)  # [n_markers]
             optimizer.zero_grad()
             predicted_markers = model(masked_markers, part_labels)
             loss_rec_body = criterion(predicted_markers, ground_truth)

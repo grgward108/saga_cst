@@ -49,7 +49,7 @@ class PoseBridge(nn.Module):
         batch_size, seq_len, n_markers, marker_dim = x.size()
 
         # Flatten each frame into markers: [batch_size * seq_len, n_markers, marker_dim]
-        x = x.view(batch_size * seq_len, n_markers, marker_dim)
+        x = x.reshape(batch_size * seq_len, n_markers, marker_dim)
 
         # Project marker features to embedding dimension: [batch_size * seq_len, n_markers, model_dim]
         marker_embeds = self.input_proj(x)
