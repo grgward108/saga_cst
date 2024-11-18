@@ -100,15 +100,15 @@ class GRAB_DataLoader(data.Dataset):
 
             # Adjust sequence length
             if N >= clip_len:
-                seq_transl = cdata['body'][()]['params']['transl']
+                seq_params = cdata['body'][()]['params']
             else:
                 diff = clip_len - N
-                seq_transl = np.concatenate([np.repeat(cdata['body'][()]['params']['transl'][0].reshape(1, -1), diff, axis=0), cdata['body'][()]['params']['transl']], axis=0)
+                seq_params = {key: np.concatenate([
+                    np.repeat(cdata['body'][()]['params'][key][0].reshape(1, -1), diff, axis=0),
+                    cdata['body'][()]['params'][key]], axis=0) for key in cdata['body'][()]['params']}
 
             data_dict = {
-                'body': {
-                    'transl': seq_transl[-clip_len:][::sample_rate],
-                },
+                'body': {key: seq_params[key][-clip_len:][::sample_rate] for key in seq_params},
                 'gender': str(cdata['gender']),
                 'framerate': fps
             }
@@ -122,30 +122,28 @@ class GRAB_DataLoader(data.Dataset):
 
 
     def create_body_repr(self, body_params, markers_ids, smplx_model_path, gender):
-        """
-        Create body representation by passing body parameters through the SMPL-X model.
-        """
         bs = body_params['transl'].shape[0]
 
         # Ensure 'betas' is correctly shaped
-        if 'betas' in body_params and body_params['betas'].shape[0] != bs:
-            body_params['betas'] = np.repeat(body_params['betas'], bs, axis=0)
+        if 'betas' in body_params and body_params['betas'].ndim == 1:
+            body_params['betas'] = np.repeat(body_params['betas'][np.newaxis, :], bs, axis=0)
         elif 'betas' not in body_params:
             body_params['betas'] = np.zeros((bs, 10))
 
         for param_name in body_params:
             body_params[param_name] = torch.from_numpy(body_params[param_name]).float().to(device)
-            # Uncomment for debugging:
-            # print(f"{param_name} shape: {body_params[param_name].shape}")
+            # Expand parameters if necessary
+            if body_params[param_name].ndim == 2 and body_params[param_name].shape[0] != bs:
+                body_params[param_name] = body_params[param_name].unsqueeze(0).repeat(bs, 1)
 
-        # Initialize SMPL-X model with use_pca=True and num_pca_comps=24
+        # Initialize SMPL-X model with appropriate parameters
         body_model = smplx.create(
             model_path=smplx_model_path,
             model_type='smplx',
             gender=gender,
             batch_size=bs,
-            use_pca=True,       # Use PCA for hand poses
-            num_pca_comps=24    # Match the number of PCA components in your data
+            use_pca=True,        # Use PCA representation for hand poses
+            num_pca_comps=24  
         ).to(device)
 
         with torch.no_grad():
@@ -153,6 +151,7 @@ class GRAB_DataLoader(data.Dataset):
             markers = smplx_output.vertices[:, markers_ids, :]  # [T, N_markers, 3]
 
         return markers.cpu().numpy()
+
 
 
     def create_body_hand_repr(self, smplx_model_path):
@@ -178,17 +177,22 @@ class GRAB_DataLoader(data.Dataset):
             # Compute markers using SMPL-X model
             markers = self.create_body_repr(body_params, self.markers_ids, smplx_model_path, gender)
 
-            # Normalize markers
-            markers_mean = markers.mean(axis=(0, 1), keepdims=True)
-            markers_std = markers.std(axis=(0, 1), keepdims=True)
-            normalized_markers = (markers - markers_mean) / (markers_std + 1e-8)
+            # Normalize markers (optional)
+            if self.normalize:
+                markers_mean = markers.mean(axis=(0, 1), keepdims=True)
+                markers_std = markers.std(axis=(0, 1), keepdims=True)
+                normalized_markers = (markers - markers_mean) / (markers_std + 1e-8)
+            else:
+                normalized_markers = markers
+
 
             # Map markers to part labels
             part_labels = self.map_markers_to_parts(self.markers_ids)
 
             # Store normalized data and part labels
             self.clip_img_list.append(normalized_markers)  # [seq_len, N_markers, 3]
-            self.part_labels_list.append(part_labels)
+            self.part_labels_list.append(part_labels)  # [N_markers]
+
 
         self.clip_img_list = np.asarray(self.clip_img_list)  # [N_samples, seq_len, N_markers, 3]
         self.part_labels_list = np.asarray(self.part_labels_list)  # [N_samples, N_markers]
@@ -201,6 +205,7 @@ class GRAB_DataLoader(data.Dataset):
     def __getitem__(self, index):
         clip_img = self.clip_img_list[index]  # [seq_len, N_markers, 3]
         part_labels = self.part_labels_list[index]  # [N_markers]
+
 
         # Convert to tensor
         clip_img = torch.from_numpy(clip_img).float()  # [seq_len, N_markers, 3]

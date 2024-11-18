@@ -4,78 +4,69 @@ import torch.nn.functional as F
 from utils.partbased_segment import get_segmentation, create_marker_to_part
 
 class PoseBridge(nn.Module):
-    def __init__(self, n_markers, marker_dim=3, model_dim=128, num_heads=8, num_layers=4, seq_len=62):
+    def __init__(self, n_markers, marker_dim=3, model_dim=64, num_heads=8, num_layers=4, seq_len=62):
         super(PoseBridge, self).__init__()
-        self.n_markers = n_markers        # Number of markers per frame
-        self.marker_dim = marker_dim      # Features per marker (x, y, z)
-        self.model_dim = model_dim        # Embedding dimension for the transformer
-        self.num_heads = num_heads        # Number of attention heads
-        self.num_layers = num_layers      # Number of transformer layers
-        self.seq_len = seq_len            # Sequence length (number of frames)
+        self.n_markers = n_markers
+        self.marker_dim = marker_dim
+        self.model_dim = model_dim
+        self.num_heads = num_heads
+        self.num_layers = num_layers
+        self.seq_len = seq_len
 
-        # Learnable part embeddings
-        self.num_parts = 8  # Example: Total number of parts (e.g., head, arms, legs, etc.)
-        self.part_embedding = nn.Embedding(self.num_parts, self.model_dim)
-
-        # Input embedding layer for spatial transformer
-        self.input_proj = nn.Linear(self.marker_dim, self.model_dim)
-
-        # Spatial transformer encoder (like MarkerNet)
-        encoder_layer = nn.TransformerEncoderLayer(
-            d_model=self.model_dim, nhead=self.num_heads, dim_feedforward=256, batch_first=True
+        # Use the separate transformer classes
+        self.spatial_transformer = SpatialTransformer(
+            n_markers, model_dim, num_layers=self.num_layers, num_heads=self.num_heads
         )
-        self.spatial_transformer = nn.TransformerEncoder(encoder_layer, num_layers=self.num_layers)
-
-        # Temporal transformer encoder
-        temporal_encoder_layer = nn.TransformerEncoderLayer(
-            d_model=self.n_markers * self.model_dim, nhead=self.num_heads, dim_feedforward=512, batch_first=True
+        self.temporal_transformer = TemporalTransformer(
+            model_dim * n_markers, num_layers=self.num_layers, num_heads=self.num_heads
         )
-        self.temporal_transformer = nn.TransformerEncoder(temporal_encoder_layer, num_layers=self.num_layers)
 
-        # Output layer to map back to original marker positions
+        # Output layer remains the same
         self.output_layer = nn.Linear(self.n_markers * self.model_dim, self.n_markers * self.marker_dim)
 
     def forward(self, x, part_labels):
-        """
-        Forward pass through PoseBridge.
-        
-        Args:
-            x: [batch_size, seq_len, n_markers, marker_dim]
-            part_labels: [n_markers] (marker-to-part mapping for embedding)
-        Returns:
-            Output: [batch_size, seq_len, n_markers, marker_dim]
-        """
 
         batch_size, seq_len, n_markers, marker_dim = x.size()
 
-        # Flatten each frame into markers: [batch_size * seq_len, n_markers, marker_dim]
-        x = x.reshape(batch_size * seq_len, n_markers, marker_dim)
+        
+        # Correct reshaping
+        x = x.contiguous().view(batch_size * seq_len, n_markers, marker_dim)
 
-        # Project marker features to embedding dimension: [batch_size * seq_len, n_markers, model_dim]
-        marker_embeds = self.input_proj(x)
+        
+        # Project marker features
+        marker_embeds = self.spatial_transformer.input_proj(x)
 
-        # Add part-based embeddings
-        part_labels = part_labels.unsqueeze(0).expand(batch_size * seq_len, -1).to(x.device)  # [batch_size * seq_len, n_markers]
-        part_embeds = self.part_embedding(part_labels)  # [batch_size * seq_len, n_markers, model_dim]
-        marker_embeds = marker_embeds + part_embeds  # Add part-based embeddings to marker embeddings
+        
+        # If part_labels is of shape [n_markers]
+        if len(part_labels.shape) == 2:
+            part_labels = part_labels[0]  # Use the first sample's part_labels
+        part_labels = part_labels.to(x.device)  # Now shape is [n_markers]
+        
+        # Expand part_labels
+        part_labels = part_labels.unsqueeze(0).expand(marker_embeds.size(0), -1)  # Shape: [batch_size * seq_len, n_markers]
+        part_embeds = self.spatial_transformer.part_embedding(part_labels)
 
-        # Apply spatial transformer: [batch_size * seq_len, n_markers, model_dim]
-        marker_embeds = self.spatial_transformer(marker_embeds)
+        
+        # Element-wise addition
+        marker_embeds = marker_embeds + part_embeds
 
-        # Flatten markers for temporal transformer: [batch_size, seq_len, n_markers * model_dim]
-        x = marker_embeds.view(batch_size, seq_len, -1)
+        # Pass through the spatial transformer
+        marker_embeds = marker_embeds.permute(1, 0, 2)  # [n_markers, batch_size * seq_len, model_dim]
+        marker_embeds = self.spatial_transformer.transformer_encoder(marker_embeds)
+        marker_embeds = marker_embeds.permute(1, 0, 2)  # [batch_size * seq_len, n_markers, model_dim]
 
-        # Apply temporal transformer: [batch_size, seq_len, n_markers * model_dim]
+        # Reshape for temporal transformer
+        x = marker_embeds.reshape(batch_size, seq_len, -1)  # [batch_size, seq_len, n_markers * model_dim]
+
+
+        # Pass through the temporal transformer
         x = self.temporal_transformer(x)
 
-        # Map back to original marker dimensions: [batch_size, seq_len, n_markers * marker_dim]
+        # Map back to marker positions
         x = self.output_layer(x)
-
-        # Reshape to [batch_size, seq_len, n_markers, marker_dim]
         x = x.view(batch_size, seq_len, n_markers, marker_dim)
 
         return x
-
 
 class SpatialTransformer(nn.Module):
     def __init__(self, n_markers, model_dim, num_layers, num_heads):
