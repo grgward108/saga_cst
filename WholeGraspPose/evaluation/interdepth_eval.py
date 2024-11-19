@@ -19,7 +19,7 @@ objects = ["toothpaste", "camera", "wineglass", "binoculars", "mug"]
 rhand_verts_indices = [64, 65, 66, 67, 68, 69, 70, 71, 72, 73, 74, 75, 76, 77, 78, 121, 122, 123, 124, 125, 126, 127, 128, 129, 130, 131, 132, 133, 134, 135, 136, 137, 138, 139, 140, 141, 142]
 
 # Directory template for loading marker results
-datadirectory_template = '../../results/evaluation_01/GraspPose/{object}/markers_results.npy'
+datadirectory_template = '../../results/testdump/GraspPose/{object}/markers_results.npy'
 
 # Process objects
 for obj in objects:
@@ -67,7 +67,7 @@ for obj in objects:
                 total_interpenetration_depth += interpenetration_depth_cm.item()
 
                 # Calculate contact points
-                contact = torch.where((h2o_signed < 0.1) * (h2o_signed > -0.1) == True)[0].size()[0]
+                contact = torch.where((h2o_signed < 0.001) * (h2o_signed > -0.001) == True)[0].size()[0]
                 total_contact_points += contact
 
                 print(f"Sample {sample_idx + 1}: Interpenetration depth = {interpenetration_depth_cm:.2f} cm")

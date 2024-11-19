@@ -5,6 +5,25 @@ import sys
 from utils.cfg_parser import Config
 from WholeGraspPose.trainer import Trainer
 
+def count_parameters(trainer):
+    """
+    Count and display the number of parameters in the FullBodyGraspNet model and its components.
+    """
+    model = trainer.full_grasp_net
+
+    # Total parameters
+    total_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
+
+    # If the model has specific components, count their parameters
+    components = {}
+    for name, module in model.named_children():  # Iterate over submodules
+        components[name] = sum(p.numel() for p in module.parameters() if p.requires_grad)
+
+    # Print details
+    print(f"Total trainable parameters in FullBodyGraspNet: {total_params}")
+    for name, params in components.items():
+        print(f"  - {name}: {params} parameters")
+
 if __name__ == '__main__':
 
     parser = argparse.ArgumentParser(description='GrabNet-Training')
@@ -36,6 +55,9 @@ if __name__ == '__main__':
 
     parser.add_argument('--exp_name', default = None, type=str,
                         help='experiment name')
+    
+    parser.add_argument('--param-count', action='store_true',
+                        help='If set, the script will display parameter counts and exit.')
 
 
     args = parser.parse_args()
@@ -61,6 +83,11 @@ if __name__ == '__main__':
 
     cfg = Config(default_cfg_path=default_cfg_path, **cfg)
     grabpose_trainer = Trainer(cfg=cfg)
+
+    if args.param_count:
+        count_parameters(grabpose_trainer)
+        sys.exit(0)
+
     grabpose_trainer.fit()
 
     cfg = grabpose_trainer.cfg

@@ -22,6 +22,7 @@ parser.add_argument('--log_step', type=int, default=100)
 parser.add_argument('--save_step', type=int, default=500)
 parser.add_argument('--save_dir', type=str, default='logs')
 parser.add_argument('--exp_name', type=str, default='default_experiment', help='Experiment name for organizing logs')
+parser.add_argument('--param_count', action='store_true', help='Count the model parameters and exit.')
 
 args = parser.parse_args()
 
@@ -55,6 +56,27 @@ def setup_logger(logdir):
     logger.addHandler(file_handler)
 
     return logger
+
+def count_parameters():
+    """
+    Count and display the number of trainable parameters in the model and its components.
+    """
+    n_markers = 143  # Example value; adjust based on your dataset or model configuration
+    model = PoseBridge(n_markers=n_markers).to(device)
+
+    # Calculate total number of trainable parameters
+    total_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
+
+    # Calculate parameters for each component
+    spatial_transformer_params = sum(p.numel() for p in model.spatial_transformer.parameters() if p.requires_grad)
+    temporal_transformer_params = sum(p.numel() for p in model.temporal_transformer.parameters() if p.requires_grad)
+    output_layer_params = sum(p.numel() for p in model.output_layer.parameters() if p.requires_grad)
+
+    # Print details
+    print(f"Total trainable parameters in PoseBridge: {total_params}")
+    print(f"  - SpatialTransformer parameters: {spatial_transformer_params}")
+    print(f"  - TemporalTransformer parameters: {temporal_transformer_params}")
+    print(f"  - Output layer parameters: {output_layer_params}")
 
 
 # Training function
@@ -150,4 +172,7 @@ def train():
 
 
 if __name__ == "__main__":
+    if args.param_count:
+        count_parameters()
+        exit(0)
     train()
