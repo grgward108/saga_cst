@@ -110,7 +110,7 @@ class MarkerNet(nn.Module):
 
         # Fully connected layer after transformer
         transformer_output_dim = self.d_model * self.n_markers  # Total dimension after flattening transformer output
-        self.fc_out = nn.Linear(transformer_output_dim, self.n_neurons)
+        self.fc_out = nn.Linear(self.n_markers * (self.d_model + 1), self.n_neurons)
 
         # Residual blocks
         self.enc_rb1 = ResBlock(self.n_neurons, self.n_neurons)
@@ -173,8 +173,14 @@ class MarkerNet(nn.Module):
         marker_distance_weights = marker_distance_weights.expand(-1, -1, transformer_output.size(-1))  # Shape: (64, 143, 128)
 
         weighted_transformer_output = transformer_output * marker_distance_weights
+        
 
-        X0 = weighted_transformer_output.contiguous().view(bs, -1)  # (bs, n_markers * d_model)
+        contacts_mask = contacts_markers
+
+        transformer_output_with_contacts = torch.cat([weighted_transformer_output, contacts_mask], dim=-1)  # Shape: (batch_size, n_markers, d_model + 1)
+        
+
+        X0 = transformer_output_with_contacts.contiguous().view(bs, -1)  # (bs, n_markers * d_model)
         X = F.relu(self.fc_out(X0))
 
         X = self.enc_rb1(X)
