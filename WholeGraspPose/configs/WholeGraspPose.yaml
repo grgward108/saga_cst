@@ -1,4 +1,4 @@
-base_lr: 0.0005
+base_lr: 0.00005
 batch_size: 128
 best_net: null
 bps_size: 4096
@@ -20,7 +20,7 @@ use_multigpu: false
 vpe_path: null
 work_dir: null
 load_on_ram: False
-cond_object_height: True
+cond_object_height: False
 # gender: male  # 'male' / 'female' /
 motion_intent: False  # 'use'/'offhand'/'pass'/'lift'/ False(all intent)
 object_class: ['all']  # ['', ''] / ['all']
@@ -36,3 +36,4 @@ obj_feature: 12
 pointnet_hc: 64
 continue_train: False
 data_representation: 'markers_143'     # 'joints' / 'markers_143' / 'markers_214' / 'markers_593'
+transformer_embed_dimension: 64
